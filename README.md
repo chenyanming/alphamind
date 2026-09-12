@@ -151,10 +151,9 @@ boundary checks each result before the application shows an Assist Card.
 The [official requirements](https://agentsforhumans.devpost.com/rules) state
 that Amazon Bedrock AgentCore deployment can strengthen the Technical
 Implementation score, but is not required. This project therefore keeps cloud
-deployment outside the verified submission path. A complete submission still
-needs a public repository containing the runnable project, a public demo video
-of no more than five minutes, the architecture diagram, and the submitter's AWS
-Builder ID.
+deployment outside the verified submission path. A complete entry still needs
+the public repository, architecture diagram, and a public demo video of no more
+than five minutes. It also needs the submitter's AWS Builder ID.
 
 ## Project provenance
 

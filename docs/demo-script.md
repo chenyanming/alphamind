@@ -16,7 +16,7 @@ Narration:
 
 ## 0:25–0:55 — One App, two Agents
 
-Show `main.py`, focusing on the two `app.agent(...)` lines.
+Show `main.py` and focus on the two `app.agent(...)` lines.
 
 Narration:
 
