@@ -1,15 +1,14 @@
-# Japanese Phone Call Translator
+# AlphaMind
 
-Japanese Phone Call Translator helps foreign residents in Japan understand and
-answer phone calls in Japanese. It listens to the caller and shows the meaning
-in Simplified Chinese. It then provides two or three relevant Japanese reply
-options. It flags dates, prices, appointments, and other commitments before the
-user answers.
+AlphaMind gives foreign residents real-time intelligence for Japanese phone
+calls. It listens to the caller and explains the meaning in Simplified Chinese.
+It then provides two or three relevant Japanese reply options. It flags dates,
+prices, appointments, and other commitments before the user answers.
 
 The project is one Python application with two independent Agents. It targets
 the Everyday Agents track of the Agents for Humans Hackathon.
 
-![Japanese Phone Call Translator architecture](docs/architecture.png)
+![AlphaMind architecture](docs/architecture.png)
 
 ## The two-Agent design
 
@@ -21,7 +20,7 @@ from japanese_reply_agent import JapaneseReplyAgent
 from reasoning_config import ReasoningConfig
 from voice_agent import JapaneseCallListenerAgent
 
-app = Vifu("Japanese Phone Call Translator")
+app = Vifu("AlphaMind")
 gpu_layers = (
     36
     if sys.platform == "darwin"
@@ -159,10 +158,9 @@ Builder ID.
 
 ## Project provenance
 
-Japanese Phone Call Translator was created during the hackathon submission
-period. It uses the public Strands Agents, LiveKit Agents, Pydantic, and `vifu`
-Python packages. The `vifu` package supplies local model adapters and Agent
-routing. The model files are separate downloads and are not part of this
-repository.
+AlphaMind was created during the hackathon submission period. It uses the
+public Strands Agents, LiveKit Agents, Pydantic, and `vifu` Python packages.
+The `vifu` package supplies local model adapters and Agent routing. The model
+files are separate downloads and are not part of this repository.
 
 The project is licensed under Apache License 2.0. See [LICENSE](LICENSE).

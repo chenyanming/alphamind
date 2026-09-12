@@ -13,7 +13,7 @@ from reasoning_config import ReasoningConfig
 from result_sink import CallAssistResultSink
 from vifu import AgentRequest
 
-logger = logging.getLogger("japanese-phone-call-translator-reasoning")
+logger = logging.getLogger("alphamind-reasoning")
 
 MAX_REASONING_ATTEMPTS = 3
 MAX_REASONING_TOKENS = 500

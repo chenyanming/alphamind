@@ -47,7 +47,7 @@ def print_transcript_status(event: dict[str, Any]) -> None:
 
 
 app = Vifu(
-    "Japanese Phone Call Translator",
+    "AlphaMind",
     workspace=Path(__file__).resolve().parent,
     capture_trace_content=True,
 )

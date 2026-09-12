@@ -11,8 +11,8 @@ Narration:
 
 > Foreign residents in Japan often receive calls about deliveries,
 > appointments, housing, utilities, or schools. When they cannot understand the
-> caller, they also cannot decide how to answer. Japanese Phone Call Translator
-> explains the latest message and provides relevant Japanese reply options.
+> caller, they also cannot decide how to answer. AlphaMind explains the latest
+> message and provides relevant Japanese reply options.
 
 ## 0:25–0:55 — One App, two Agents
 
@@ -76,4 +76,4 @@ Narration:
 - Show the working product, not only code or slides.
 - Include the problem, audience, and why it matters.
 - Keep secrets, local paths, notifications, and unrelated windows off-screen.
-- Add English subtitles when any narration or UI explanation is not English.
+- If any narration or UI explanation is not English, add English subtitles.

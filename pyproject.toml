@@ -1,7 +1,7 @@
 [project]
-name = "japanese-phone-call-translator"
+name = "alphamind"
 version = "0.1.0"
-description = "A Japanese phone-call translator for foreign residents in Japan."
+description = "Real-time call intelligence for foreign residents in Japan."
 requires-python = ">=3.10"
 license = "Apache-2.0"
 dependencies = [

@@ -1,4 +1,4 @@
-"""Local LiveKit call listener for Japanese Phone Call Translator."""
+"""Local LiveKit call listener for AlphaMind."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from livekit.agents.types import (
 from livekit.agents.voice import UserInputTranscribedEvent, room_io
 from livekit.plugins import silero
 
-logger = logging.getLogger("japanese-phone-call-translator-voice")
+logger = logging.getLogger("alphamind-voice")
 
 DUPLICATE_TRANSCRIPT_WINDOW_SECONDS = 3.0
 _NATIVE_STDERR_LOCK = Lock()
