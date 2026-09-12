@@ -1,0 +1,168 @@
+# Japanese Phone Call Translator
+
+Japanese Phone Call Translator helps foreign residents in Japan understand and
+answer phone calls in Japanese. It listens to the caller and shows the meaning
+in Simplified Chinese. It then provides two or three relevant Japanese reply
+options. It flags dates, prices, appointments, and other commitments before the
+user answers.
+
+The project is one Python application with two independent Agents. It targets
+the Everyday Agents track of the Agents for Humans Hackathon.
+
+![Japanese Phone Call Translator architecture](docs/architecture.png)
+
+## The two-Agent design
+
+```python
+import sys
+
+from vifu import LocalLlama, LocalWhisper, Vifu
+from japanese_reply_agent import JapaneseReplyAgent
+from reasoning_config import ReasoningConfig
+from voice_agent import JapaneseCallListenerAgent
+
+app = Vifu("Japanese Phone Call Translator")
+gpu_layers = (
+    36
+    if sys.platform == "darwin"
+    and getattr(LocalLlama, "supports_safe_accelerator_shutdown", False)
+    else 0
+)
+
+call_listener = JapaneseCallListenerAgent(
+    language="ja-JP",
+    handoff="japanese-reply-agent",
+    transcriber=LocalWhisper(model="ggml-base.bin", language="ja"),
+)
+
+reply_agent = JapaneseReplyAgent(
+    ReasoningConfig.local(
+        LocalLlama(
+            model="qwen2.5-3b-instruct-q4_k_m.gguf",
+            context_size=8_192,
+            gpu_layers=gpu_layers,
+            timeout=30,
+        )
+    )
+)
+
+app.agent("japanese-call-listener", call_listener)
+app.agent("japanese-reply-agent", reply_agent)
+app.run()
+```
+
+- `japanese-call-listener` owns the LiveKit audio session, VAD, speech-to-text,
+  final-turn ordering, handoff, and result delivery. It drops known non-speech
+  markers and suppresses repeated final transcripts for three seconds per
+  session and speaker. While reasoning is busy, it coalesces waiting final
+  transcripts to the newest turn instead of building a stale inference queue.
+- `japanese-reply-agent` is a Strands specialist. It explains the caller's
+  Japanese, provides distinct response options, identifies commitments and
+  risks, and publishes one schema-validated Assist Card.
+- The `vifu` Python package registers both Agents, routes their typed handoff,
+  and records each invocation as a separate trace.
+
+The Call Listener never performs the specialist reasoning. The Reply Agent
+never owns the audio room. Provider errors fail visibly and do not switch the
+application to another model.
+
+## Local quickstart
+
+The verified development environments use Python 3.12 and 3.13 with `uv`.
+
+Place these models in `~/.vifu/models/`:
+
+```text
+~/.vifu/models/ggml-base.bin
+~/.vifu/models/qwen2.5-3b-instruct-q4_k_m.gguf
+```
+
+- `ggml-base.bin` is the multilingual
+  [whisper.cpp base model](https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-base.bin).
+  The English-only model cannot transcribe Japanese.
+- `qwen2.5-3b-instruct-q4_k_m.gguf` is the official
+  [Qwen2.5 3B Instruct GGUF](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF)
+  Q4_K_M model. The 3B model is the default because the 0.5B variant did not
+  reliably preserve Japanese deadlines or produce natural reply suggestions.
+
+Install the locked dependencies from PyPI:
+
+```bash
+uv sync --frozen
+```
+
+The lock file pins all public Python dependencies. `uv` manages the project
+environment, so you do not need to create or activate a virtual environment.
+
+Run the deterministic two-Agent demo first:
+
+```bash
+uv run --frozen python main.py demo
+```
+
+This command loads the local models and sends one Japanese turn through both
+Agents. It prints the resulting Assist Card.
+
+Then start the interactive microphone experience:
+
+```bash
+uv run --frozen python main.py
+```
+
+The default console shows the microphone meter, final Japanese transcript,
+analysis status, and Assist Card. Framework debug logs, raw tool calls, and
+native model-loading messages stay out of the user view. For development
+diagnostics, run `uv run --frozen python main.py --debug`.
+
+On Apple Silicon, `main.py` offloads 36 Qwen transformer layers to Metal when
+the installed runtime supports safe accelerator shutdown. Other environments
+use CPU execution. The local model timeout is 30 seconds.
+
+[LiveKit console mode](https://docs.livekit.io/agents/server/startup-modes/)
+uses the computer audio device. The voice pipeline runs in the local process.
+`main.py` configures local Whisper and Qwen models. This path does not read
+`.env.local` or join a hosted LiveKit room.
+
+## Tests
+
+Run the App suite:
+
+```bash
+uv run --frozen python -m unittest discover -s tests -v
+```
+
+The tests cover the two-Agent registration, the real in-process handoff,
+non-speech and duplicate-turn filtering, Strands tool schema, result validation,
+interruption ordering, and deterministic retry of unsafe model output.
+
+## Model and safety behavior
+
+The Strands Agent must call `publish_call_assist` exactly once per attempt. The
+tool requires two or three response options. Pydantic and deterministic checks
+reject duplicate responses, copied caller requests, unsafe commitments, and
+incorrect dates. The application uses deterministic decoding and retries a
+rejected card with the same model.
+
+## Hackathon fit
+
+The specialist is a real Strands Agent, not a prompt-only wrapper. It uses the
+Strands `Agent` loop and a structured `@tool`. A deterministic validation
+boundary checks each result before the application shows an Assist Card.
+
+The [official requirements](https://agentsforhumans.devpost.com/rules) state
+that Amazon Bedrock AgentCore deployment can strengthen the Technical
+Implementation score, but is not required. This project therefore keeps cloud
+deployment outside the verified submission path. A complete submission still
+needs a public repository containing the runnable project, a public demo video
+of no more than five minutes, the architecture diagram, and the submitter's AWS
+Builder ID.
+
+## Project provenance
+
+Japanese Phone Call Translator was created during the hackathon submission
+period. It uses the public Strands Agents, LiveKit Agents, Pydantic, and `vifu`
+Python packages. The `vifu` package supplies local model adapters and Agent
+routing. The model files are separate downloads and are not part of this
+repository.
+
+The project is licensed under Apache License 2.0. See [LICENSE](LICENSE).

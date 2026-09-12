@@ -1,0 +1,18 @@
+[project]
+name = "japanese-phone-call-translator"
+version = "0.1.0"
+description = "A Japanese phone-call translator for foreign residents in Japan."
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = [
+  "livekit-agents[silero]>=1.7,<2",
+  "pydantic>=2.10,<3",
+  "strands-agents>=1.0,<2",
+  "vifu>=0.1.6,<0.2",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

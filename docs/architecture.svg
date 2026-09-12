@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
+  <title id="title">Japanese Phone Call Translator architecture</title>
+  <desc id="description">One Python application helps foreign residents understand Japanese phone calls and choose relevant Japanese replies.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#07111f"/><stop offset="1" stop-color="#101b33"/></linearGradient>
+    <linearGradient id="voice" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1d8cf8"/><stop offset="1" stop-color="#0057d9"/></linearGradient>
+    <linearGradient id="reasoning" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a45bff"/><stop offset="1" stop-color="#6f35d5"/></linearGradient>
+    <linearGradient id="output" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#23c483"/><stop offset="1" stop-color="#087a58"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000814" flood-opacity="0.42"/></filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 Z" fill="#90a7c8"/></marker>
+    <style>
+      .title { font: 700 42px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #f6f9ff; }
+      .subtitle { font: 400 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #aebfd9; }
+      .box-title { font: 700 25px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .box-copy { font: 500 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #eaf2ff; }
+      .small { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #bcd0eb; }
+      .label { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #d7e5f8; letter-spacing: 1px; }
+    </style>
+  </defs>
+  <rect width="1600" height="900" rx="28" fill="url(#background)"/>
+  <circle cx="1450" cy="90" r="260" fill="#163a73" opacity="0.22"/><circle cx="100" cy="860" r="300" fill="#532b8a" opacity="0.18"/>
+  <text x="90" y="90" class="title">Japanese Phone Call Translator</text>
+  <text x="90" y="128" class="subtitle">Understand Japanese calls · Choose a relevant reply · On-device inference</text>
+  <g filter="url(#shadow)"><rect x="90" y="225" width="245" height="235" rx="24" fill="#15253d" stroke="#3d5576" stroke-width="2"/><text x="122" y="270" class="label">VOICE SOURCES</text><text x="122" y="322" class="box-title">Live audio</text><text x="122" y="362" class="box-copy">Microphone</text><text x="122" y="397" class="box-copy">Phone call</text><text x="122" y="432" class="box-copy">LiveKit room</text></g>
+  <g filter="url(#shadow)"><rect x="435" y="190" width="360" height="310" rx="28" fill="url(#voice)"/><text x="470" y="240" class="label">AGENT 1</text><text x="470" y="286" class="box-title">Call Listener</text><text x="470" y="328" class="box-copy">Audio session + VAD</text><text x="470" y="363" class="box-copy">Final-turn ordering</text><text x="470" y="398" class="box-copy">Local Whisper STT</text><rect x="470" y="432" width="286" height="42" rx="12" fill="#061d42" opacity="0.58"/><text x="491" y="459" class="small">final Japanese transcript</text></g>
+  <g filter="url(#shadow)"><rect x="890" y="190" width="390" height="310" rx="28" fill="url(#reasoning)"/><text x="925" y="240" class="label">AGENT 2</text><text x="925" y="286" class="box-title">Reply Agent</text><text x="925" y="328" class="box-copy">Explains the caller</text><text x="925" y="363" class="box-copy">Creates 2–3 Japanese replies</text><text x="925" y="398" class="box-copy">Checks commitments</text><rect x="925" y="432" width="320" height="42" rx="12" fill="#291151" opacity="0.58"/><text x="946" y="459" class="small">Strands + local Qwen2.5 3B</text></g>
+  <g filter="url(#shadow)"><rect x="1375" y="225" width="155" height="235" rx="24" fill="url(#output)"/><text x="1401" y="270" class="label">RESULT</text><text x="1401" y="312" class="box-title">Call</text><text x="1401" y="343" class="box-title">Answer</text><text x="1401" y="386" class="small">Translation</text><text x="1401" y="415" class="small">2–3 replies</text><text x="1401" y="444" class="small">Confirm</text></g>
+  <line x1="335" y1="343" x2="419" y2="343" stroke="#90a7c8" stroke-width="5" marker-end="url(#arrow)"/><line x1="795" y1="343" x2="874" y2="343" stroke="#90a7c8" stroke-width="5" marker-end="url(#arrow)"/><text x="803" y="320" class="small">typed handoff</text><line x1="1280" y1="343" x2="1359" y2="343" stroke="#90a7c8" stroke-width="5" marker-end="url(#arrow)"/>
+  <g filter="url(#shadow)"><rect x="285" y="610" width="1030" height="175" rx="28" fill="#111e31" stroke="#314b70" stroke-width="2"/><text x="330" y="660" class="label">PYTHON APPLICATION</text><text x="330" y="704" class="box-title">Agent registration · Typed handoff · Result delivery · Traces</text><text x="330" y="748" class="subtitle">Each Agent has one clear responsibility and can be tested independently.</text></g>
+  <line x1="615" y1="500" x2="615" y2="594" stroke="#55759f" stroke-width="4" marker-end="url(#arrow)"/><line x1="1085" y1="500" x2="1085" y2="594" stroke="#55759f" stroke-width="4" marker-end="url(#arrow)"/>
+  <rect x="90" y="820" width="1440" height="2" fill="#304867"/><text x="90" y="862" class="small">Verified local path: Python 3.12 · LiveKit Agents · Strands Agents · vifu · whisper.cpp · llama.cpp</text>
+</svg>

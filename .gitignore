@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.*
+.pytest_cache/
+.ruff_cache/
+.venv/
+.vifu/
+__pycache__/
+*.py[cod]
+*.ses
+*.gguf
+*.bin
+dist/
+build/
