@@ -32,23 +32,38 @@ gpu_layers = (
 call_listener = JapaneseCallListenerAgent(
     language="ja-JP",
     handoff="japanese-reply-agent",
-    transcriber=LocalWhisper(model="ggml-small.bin", language="ja"),
+    transcriber=app.provider(
+        "local-whisper",
+        LocalWhisper(model="ggml-small.bin", language="ja"),
+    ),
     speaker_identifier=LocalSpeakerIdentifier(),
 )
 
+reasoning_provider = app.provider(
+    "local-qwen",
+    LocalLlama(
+        model="qwen2.5-3b-instruct-q4_k_m.gguf",
+        context_size=8_192,
+        gpu_layers=gpu_layers,
+        timeout=30,
+    ),
+)
 reply_agent = JapaneseReplyAgent(
-    ReasoningConfig.local(
-        LocalLlama(
-            model="qwen2.5-3b-instruct-q4_k_m.gguf",
-            context_size=8_192,
-            gpu_layers=gpu_layers,
-            timeout=30,
-        )
-    )
+    ReasoningConfig.local(reasoning_provider)
 )
 
-app.agent("japanese-call-listener", call_listener)
-app.agent("japanese-reply-agent", reply_agent)
+app.agent(
+    "japanese-call-listener",
+    call_listener,
+    implementation="livekit-agents",
+    providers={"transcription": app.providers["local-whisper"]},
+)
+app.agent(
+    "japanese-reply-agent",
+    reply_agent,
+    implementation="strands-agents",
+    providers={"reasoning": reasoning_provider},
+)
 app.run()
 ```
 
@@ -101,16 +116,18 @@ uv sync --frozen
 The lock file pins all public Python dependencies. `uv` manages the project
 environment, so you do not need to create or activate a virtual environment.
 
-Run the deterministic two-Agent demo first:
+To exercise one deterministic two-Agent handoff without opening the microphone,
+run:
 
 ```bash
 uv run --frozen python main.py demo
 ```
 
-This command loads the local models and sends one Japanese turn through both
-Agents. It prints the resulting Assist Card.
+This command sends one Japanese turn through both Agents and prints the Assist
+Card. `uv` manages the project environment, so no virtual environment activation
+step is required.
 
-Then start the interactive microphone experience:
+Then start the microphone experience:
 
 ```bash
 uv run --frozen python main.py
@@ -132,8 +149,10 @@ use CPU execution. The local model timeout is 30 seconds.
 
 [LiveKit console mode](https://docs.livekit.io/agents/server/startup-modes/)
 uses the computer audio device. The voice pipeline runs in the local process.
-`main.py` configures local Whisper and Qwen models. This path does not read
-`.env.local` or join a hosted LiveKit room.
+`main.py` configures local Whisper, speaker identification, and Qwen directly in
+Python. Each model is declared once in the App Provider list and bound to the
+Agent that uses it. The application does not read `.env.local` or join a hosted
+LiveKit room.
 
 ## Tests
 

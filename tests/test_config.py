@@ -9,6 +9,8 @@ class ReasoningConfigTests(unittest.TestCase):
     def test_provider_must_be_configured_explicitly(self) -> None:
         config = ReasoningConfig.from_env({})
 
+        self.assertIsNone(config.provider)
+
         with self.assertRaisesRegex(
             ReasoningConfigurationError,
             "JAPANESE_CALL_REASONING_URL",

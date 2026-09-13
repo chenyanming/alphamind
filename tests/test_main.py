@@ -30,6 +30,10 @@ class LocalAppTests(unittest.TestCase):
         )
         self.assertEqual(main.reply_agent._reasoning.provider_type, "vifu-local")
         self.assertEqual(
+            main.reply_agent._reasoning.provider.model,
+            main.LOCAL_REASONING_MODEL,
+        )
+        self.assertEqual(
             main.reply_agent._reasoning.provider.gpu_layers,
             (
                 36
@@ -64,6 +68,36 @@ class LocalAppTests(unittest.TestCase):
         self.assertEqual(
             registrations[1][2]["metadata"]["role"],
             "japanese-call-replies",
+        )
+        self.assertEqual(
+            registrations[0][2]["metadata"]["implementation"],
+            "livekit-agents",
+        )
+        self.assertEqual(
+            registrations[1][2]["metadata"]["implementation"],
+            "strands-agents",
+        )
+        self.assertEqual(
+            registrations[0][2]["metadata"]["providerBindings"],
+            {
+                "transcription": {
+                    "providerKey": "local-whisper",
+                    "capability": "transcription",
+                }
+            },
+        )
+        self.assertEqual(
+            registrations[1][2]["metadata"]["providerBindings"],
+            {
+                "reasoning": {
+                    "providerKey": "local-qwen",
+                    "capability": "chat",
+                }
+            },
+        )
+        self.assertEqual(
+            set(main.app.providers),
+            {"local-whisper", "local-qwen"},
         )
 
     def test_main_delegates_the_complete_lifecycle_to_vifu(self) -> None:
@@ -148,7 +182,6 @@ class LocalAppTests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "Configuration error"),
             ):
                 main.main([])
-
 
 if __name__ == "__main__":
     unittest.main()

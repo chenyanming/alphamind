@@ -70,6 +70,26 @@ app = Vifu(
     capture_trace_content=True,
 )
 
+transcription_provider = app.provider(
+    "local-whisper",
+    LocalWhisper(
+        model=LOCAL_WHISPER_MODEL,
+        language="ja",
+    ),
+    name="Japanese Local Whisper",
+)
+reasoning_provider = app.provider(
+    "local-qwen",
+    LocalLlama(
+        model=LOCAL_REASONING_MODEL,
+        context_size=8_192,
+        default_max_tokens=1_200,
+        gpu_layers=LOCAL_REASONING_GPU_LAYERS,
+        timeout=LOCAL_REASONING_TIMEOUT_SECONDS,
+    ),
+    name="Japanese Local Qwen",
+)
+
 voice_agent = JapaneseCallListenerAgent(
     language="ja-JP",
     handoff="japanese-reply-agent",
@@ -78,24 +98,22 @@ voice_agent = JapaneseCallListenerAgent(
     on_transcript=print_transcript_status,
     on_speaker_status=print_speaker_status,
     speaker_identifier=LocalSpeakerIdentifier(model=DEFAULT_SPEAKER_MODEL),
-    transcriber=LocalWhisper(
-        model=LOCAL_WHISPER_MODEL,
-        language="ja",
-    ),
+    transcriber=transcription_provider,
 )
-configured_reasoning = ReasoningConfig.local(
-    LocalLlama(
-        model=LOCAL_REASONING_MODEL,
-        context_size=8_192,
-        default_max_tokens=1_200,
-        gpu_layers=LOCAL_REASONING_GPU_LAYERS,
-        timeout=LOCAL_REASONING_TIMEOUT_SECONDS,
-    )
-)
-reply_agent = JapaneseReplyAgent(configured_reasoning)
+reply_agent = JapaneseReplyAgent(ReasoningConfig.local(reasoning_provider))
 
-app.agent("japanese-call-listener", voice_agent)
-app.agent("japanese-reply-agent", reply_agent)
+app.agent(
+    "japanese-call-listener",
+    voice_agent,
+    implementation="livekit-agents",
+    providers={"transcription": transcription_provider},
+)
+app.agent(
+    "japanese-reply-agent",
+    reply_agent,
+    implementation="strands-agents",
+    providers={"reasoning": reasoning_provider},
+)
 
 
 def run_demo() -> None:
@@ -131,7 +149,10 @@ def main(argv: list[str] | None = None) -> None:
             run_demo()
             return
         app.run()
-    except (VoiceConfigurationError, ReasoningConfigurationError) as error:
+    except (
+        VoiceConfigurationError,
+        ReasoningConfigurationError,
+    ) as error:
         raise SystemExit(f"Configuration error: {error}") from None
     finally:
         voice_agent.debug = False

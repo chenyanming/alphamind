@@ -201,7 +201,7 @@ requires-dist = [
     { name = "sherpa-onnx", specifier = "==1.13.8" },
     { name = "sherpa-onnx-core", specifier = "==1.13.8" },
     { name = "strands-agents", specifier = ">=1.0,<2" },
-    { name = "vifu", specifier = ">=0.1.6,<0.2" },
+    { name = "vifu", specifier = ">=0.1.7,<0.2" },
 ]
 
 [[package]]
@@ -3105,14 +3105,14 @@ wheels = [
 
 [[package]]
 name = "vifu"
-version = "0.1.6"
+version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/53/297c75d72a8c48ce784a94bda6e83ba3d3b668ef4d5b60e9ca39f5000c2d/vifu-0.1.6-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:f4ea2b5431a3077aa568449b189fb3f57fe1497c4685fc418e1ecd52214ebfe6", size = 22377983, upload-time = "2026-09-12T09:00:07.482Z" },
-    { url = "https://files.pythonhosted.org/packages/8c/80/dc3d13e0640ad149f2068c510adbe6f5c205341a498a2a45ff7c6620f511/vifu-0.1.6-py3-none-macosx_11_0_arm64.whl", hash = "sha256:01f17b7cf013455edae2c9a4ad43c809154f5a6140835bf4f8a102979ad89249", size = 21202539, upload-time = "2026-09-12T09:00:10.77Z" },
-    { url = "https://files.pythonhosted.org/packages/b3/75/17c623d9d38e9cef271ef5f7a3b7918e090606a5b9b298d29d04b1e1b58d/vifu-0.1.6-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:b6d94c085dbe780dabd8e80b65c0fe96f0fc429377bd22790e8d390924178e55", size = 22810524, upload-time = "2026-09-12T09:00:13.934Z" },
-    { url = "https://files.pythonhosted.org/packages/ca/c3/5ed5156217ea9562c68980986bcca35f1994690e8b1c7462faddef26be0a/vifu-0.1.6-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:e22d51c46549aa5acb8e39c47334907c08fa047fa3bc2b259e176f44681e7d0f", size = 23449216, upload-time = "2026-09-12T09:00:17.504Z" },
-    { url = "https://files.pythonhosted.org/packages/75/de/1d118c2bd0de76fac799db7961c990dcc676f4da96d6aaa8d71c11e02716/vifu-0.1.6-py3-none-win_amd64.whl", hash = "sha256:c0ca16e9166160b7dd351156f364186069069fdcfcc0c338e0d0839eceb78b7d", size = 20226500, upload-time = "2026-09-12T09:00:21.134Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/cc/26aa00c5c742a4e06249c4c707a72a71bf45084e885be241c79ea8e63ef6/vifu-0.1.7-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:6909632af724ffff72f1c6c259eb8ad5f16735340014c12b6742434ed15486c1", size = 22410037, upload-time = "2026-09-13T12:49:06.084Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/8b/27a6bc70149507bfa5331090dfe474a76fd115d4f1d446c56190b76f9b6f/vifu-0.1.7-py3-none-macosx_11_0_arm64.whl", hash = "sha256:c57db6e5c4c64895626afb9ea3498a960cfc194e090af1aedd5e9c40222cbc90", size = 21236748, upload-time = "2026-09-13T12:49:08.989Z" },
+    { url = "https://files.pythonhosted.org/packages/99/76/2970ddb7e98912b88faf2c3099bf7fb36ac6ce870a80d7fca383ec37d88c/vifu-0.1.7-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:078968e8ea33b3043137909df06e5772edf1342176cdf2a867e50bd1695d317b", size = 22838291, upload-time = "2026-09-13T12:49:11.57Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/8c/7a6200261a465cff43cbbc0fffd2b22702ffa3a23876e4f0a240c1bd6eb8/vifu-0.1.7-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:68ee82d9561c9345b4ce84abf39f1428a7979c7b3e9a2201512b098ee165e586", size = 23470803, upload-time = "2026-09-13T12:49:14.599Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/91/a56fe01c9cf67e9239caef56c63a0ee7d9a5da7abe8737e083ab02d62ed2/vifu-0.1.7-py3-none-win_amd64.whl", hash = "sha256:62e05adf98cc911605708b8074e97cf25c60a7370538ca4dda8218debdd50686", size = 20226300, upload-time = "2026-09-13T12:49:17.179Z" },
 ]
 
 [[package]]

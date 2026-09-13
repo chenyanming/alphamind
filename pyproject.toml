@@ -11,7 +11,7 @@ dependencies = [
   "sherpa-onnx==1.13.8",
   "sherpa-onnx-core==1.13.8",
   "strands-agents>=1.0,<2",
-  "vifu>=0.1.6,<0.2",
+  "vifu>=0.1.7,<0.2",
 ]
 
 [tool.uv]
