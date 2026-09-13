@@ -2,7 +2,7 @@
 
 AlphaMind gives foreign residents real-time intelligence for Japanese phone
 calls. It listens to the caller and explains the meaning in Simplified Chinese.
-It then provides two or three relevant Japanese reply options. It flags dates,
+It then provides two relevant Japanese reply options. It flags dates,
 prices, appointments, and other commitments before the user answers.
 
 The project is one Python application with two independent Agents. It targets
@@ -18,6 +18,7 @@ import sys
 from vifu import LocalLlama, LocalWhisper, Vifu
 from japanese_reply_agent import JapaneseReplyAgent
 from reasoning_config import ReasoningConfig
+from speaker_identification import LocalSpeakerIdentifier
 from voice_agent import JapaneseCallListenerAgent
 
 app = Vifu("AlphaMind")
@@ -31,7 +32,8 @@ gpu_layers = (
 call_listener = JapaneseCallListenerAgent(
     language="ja-JP",
     handoff="japanese-reply-agent",
-    transcriber=LocalWhisper(model="ggml-base.bin", language="ja"),
+    transcriber=LocalWhisper(model="ggml-small.bin", language="ja"),
+    speaker_identifier=LocalSpeakerIdentifier(),
 )
 
 reply_agent = JapaneseReplyAgent(
@@ -51,7 +53,9 @@ app.run()
 ```
 
 - `japanese-call-listener` owns the LiveKit audio session, VAD, speech-to-text,
-  final-turn ordering, handoff, and result delivery. It drops known non-speech
+  local speaker identification, speaker routing, final-turn ordering, handoff,
+  and result delivery. It enrolls the listener's voice, sends only caller
+  turns to Strands, and keeps uncertain turns out of reasoning. It drops known non-speech
   markers and suppresses repeated final transcripts for three seconds per
   session and speaker. While reasoning is busy, it coalesces waiting final
   transcripts to the newest turn instead of building a stale inference queue.
@@ -72,17 +76,21 @@ The verified development environments use Python 3.12 and 3.13 with `uv`.
 Place these models in `~/.vifu/models/`:
 
 ```text
-~/.vifu/models/ggml-base.bin
+~/.vifu/models/ggml-small.bin
 ~/.vifu/models/qwen2.5-3b-instruct-q4_k_m.gguf
+~/.vifu/models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
 ```
 
-- `ggml-base.bin` is the multilingual
-  [whisper.cpp base model](https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-base.bin).
+- `ggml-small.bin` is the multilingual
+  [whisper.cpp small model](https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-small.bin).
   The English-only model cannot transcribe Japanese.
 - `qwen2.5-3b-instruct-q4_k_m.gguf` is the official
   [Qwen2.5 3B Instruct GGUF](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF)
   Q4_K_M model. The 3B model is the default because the 0.5B variant did not
   reliably preserve Japanese deadlines or produce natural reply suggestions.
+- `3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx` is the
+  [sherpa-onnx speaker model](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models).
+  It identifies the listener and multiple callers locally.
 
 Install the locked dependencies from PyPI:
 
@@ -107,6 +115,11 @@ Then start the interactive microphone experience:
 ```bash
 uv run --frozen python main.py
 ```
+
+AlphaMind first asks you to say one complete sentence. That voice becomes the
+listener profile for the current session. Later listener speech is shown but
+does not trigger Strands. Caller voices are assigned stable `caller-N` labels;
+short or ambiguous speech is skipped instead of being guessed.
 
 The default console shows the microphone meter, final Japanese transcript,
 analysis status, and Assist Card. Framework debug logs, raw tool calls, and
@@ -136,11 +149,16 @@ interruption ordering, and deterministic retry of unsafe model output.
 
 ## Model and safety behavior
 
-The Strands Agent must call `publish_call_assist` exactly once per attempt. The
-tool requires two or three response options. Pydantic and deterministic checks
+The Strands Agent must call its `card` tool exactly once per attempt. The tool
+requires two response options. Pydantic and deterministic checks
 reject duplicate responses, copied caller requests, unsafe commitments, and
 incorrect dates. The application uses deterministic decoding and retries a
-rejected card with the same model.
+rejected card once with the same model. If the result is still unusable, the
+Agent returns a safe clarification card so the voice session can continue.
+When the caller asks the listener for personal or booking information, the
+model translates the request while the application supplies safe listener-side
+responses. It never fills unknown names, dates, amounts, or numbers for the
+user.
 
 ## Hackathon fit
 

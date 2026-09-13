@@ -6,11 +6,12 @@ from typing import Any
 
 from japanese_reply_agent import JapaneseReplyAgent
 from reasoning_config import ReasoningConfig, ReasoningConfigurationError
+from speaker_identification import DEFAULT_SPEAKER_MODEL, LocalSpeakerIdentifier
 from vifu import LocalLlama, LocalWhisper, Vifu
 from voice_agent import JapaneseCallListenerAgent, VoiceConfigurationError
 
 ASSIST_CARD_TOPIC = "japanese-phone-call.assist-card.v1"
-LOCAL_WHISPER_MODEL = "ggml-base.bin"
+LOCAL_WHISPER_MODEL = "ggml-small.bin"
 LOCAL_REASONING_MODEL = "qwen2.5-3b-instruct-q4_k_m.gguf"
 LOCAL_REASONING_GPU_LAYERS = (
     36
@@ -19,7 +20,7 @@ LOCAL_REASONING_GPU_LAYERS = (
     else 0
 )
 LOCAL_REASONING_TIMEOUT_SECONDS = 30.0
-DEMO_TRANSCRIPT = "明日の午後2時に荷物をお届けしてもよろしいでしょうか。"
+DEMO_TRANSCRIPT = "今、お時間よろしいでしょうか。"
 
 
 def print_assist_card(card: dict[str, Any]) -> None:
@@ -42,8 +43,25 @@ def print_assist_card(card: dict[str, Any]) -> None:
 
 def print_transcript_status(event: dict[str, Any]) -> None:
     print()
-    print(f"听到日语: {event.get('text', '')}")
+    role = event.get("speakerRole", "caller")
+    if event.get("speakerEnrollment"):
+        print("已记住你的声音。现在可以开始接听日语电话。")
+        return
+    if role == "self":
+        print(f"你说: {event.get('text', '')}")
+        return
+    if role == "unknown":
+        print(f"无法确定说话人，已跳过: {event.get('text', '')}")
+        return
+    print(f"听到对方: {event.get('text', '')}")
     print("正在分析…")
+
+
+def print_speaker_status(event: dict[str, Any]) -> None:
+    if event.get("state") == "enrollment_required":
+        print()
+        print("请先对着麦克风说一句完整的话，用来识别你的声音。")
+        print("例如：これは私の声です。AlphaMindを開始します。")
 
 
 app = Vifu(
@@ -58,6 +76,8 @@ voice_agent = JapaneseCallListenerAgent(
     result_topic=ASSIST_CARD_TOPIC,
     on_result=print_assist_card,
     on_transcript=print_transcript_status,
+    on_speaker_status=print_speaker_status,
+    speaker_identifier=LocalSpeakerIdentifier(model=DEFAULT_SPEAKER_MODEL),
     transcriber=LocalWhisper(
         model=LOCAL_WHISPER_MODEL,
         language="ja",
@@ -105,6 +125,7 @@ def main(argv: list[str] | None = None) -> None:
     arguments = sys.argv[1:] if argv is None else argv
     debug = arguments == ["--debug"]
     voice_agent.debug = debug
+    reply_agent.debug = debug
     try:
         if arguments == ["demo"]:
             run_demo()
@@ -114,6 +135,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"Configuration error: {error}") from None
     finally:
         voice_agent.debug = False
+        reply_agent.debug = False
 
 
 if __name__ == "__main__":

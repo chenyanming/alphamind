@@ -34,6 +34,18 @@ class RecordingTranscriber:
         return " 来週の金曜日です。 "
 
 
+class RecordingSpeakerIdentifier:
+    provider = "test-local-speaker-id"
+
+    def __init__(self, speaker_id: str = "caller-2") -> None:
+        self.speaker_id = speaker_id
+        self.wav = b""
+
+    def identify_wav(self, wav: bytes) -> str:
+        self.wav = wav
+        return self.speaker_id
+
+
 class VoiceAgentContractTests(unittest.TestCase):
     def test_app_voice_agent_owns_realtime_orchestration(self) -> None:
         voice = main.voice_agent
@@ -120,6 +132,27 @@ class VoiceAgentResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transcriber.language, "ja")
         self.assertTrue(transcriber.wav.startswith(b"RIFF"))
         self.assertIn(b"WAVE", transcriber.wav[:16])
+
+    async def test_livekit_stt_emits_the_local_speaker_identity(self) -> None:
+        transcriber = RecordingTranscriber()
+        identifier = RecordingSpeakerIdentifier()
+        adapter = BufferedLocalTranscriberSTT(
+            transcriber,
+            language="ja-JP",
+            speaker_identifier=identifier,
+        )
+        frame = rtc.AudioFrame.create(
+            sample_rate=48_000,
+            num_channels=1,
+            samples_per_channel=4_800,
+        )
+
+        with patch("voice_agent._native_stderr", return_value=nullcontext()):
+            event = await adapter.recognize(frame)
+
+        self.assertTrue(adapter.capabilities.diarization)
+        self.assertEqual(event.alternatives[0].speaker_id, "caller-2")
+        self.assertTrue(identifier.wav.startswith(b"RIFF"))
 
     async def test_final_turn_publishes_the_specialist_result(self) -> None:
         voice = JapaneseCallListenerAgent(

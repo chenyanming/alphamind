@@ -6,7 +6,6 @@ import asyncio
 import inspect
 import json
 import logging
-import os
 import re
 import sys
 import unicodedata
@@ -39,10 +38,12 @@ from livekit.agents.types import (
 from livekit.agents.voice import UserInputTranscribedEvent, room_io
 from livekit.plugins import silero
 
+from native_output import native_stderr as _native_stderr
+from speaker_identification import SpeakerIdentificationError
+
 logger = logging.getLogger("alphamind-voice")
 
 DUPLICATE_TRANSCRIPT_WINDOW_SECONDS = 3.0
-_NATIVE_STDERR_LOCK = Lock()
 _MARKER_BOUNDARIES = re.compile(r"[\[\](){}<>【】「」『』♪♫.,!?。！？…·・]+")
 _DUPLICATE_SEPARATORS = re.compile(r"[\s.,!?。！？…]+")
 _NON_SPEECH_LABELS = frozenset(
@@ -91,12 +92,14 @@ class BufferedLocalTranscriberSTT(stt.STT):
         transcriber: Any,
         *,
         language: str,
+        speaker_identifier: Any | None = None,
         show_native_logs: bool = False,
     ) -> None:
         super().__init__(
             capabilities=stt.STTCapabilities(
                 streaming=False,
                 interim_results=False,
+                diarization=speaker_identifier is not None,
             )
         )
         if not callable(getattr(transcriber, "transcribe_wav", None)):
@@ -108,6 +111,7 @@ class BufferedLocalTranscriberSTT(stt.STT):
             "transcriber provider",
         )
         self._model = str(getattr(transcriber, "model", "")).strip()
+        self._speaker_identifier = speaker_identifier
         self._show_native_logs = show_native_logs
 
     @property
@@ -132,16 +136,27 @@ class BufferedLocalTranscriberSTT(stt.STT):
             else _language_code(str(language))
         )
         wav = _wav_bytes(buffer)
-        transcribe = self._transcriber.transcribe_wav
-        if inspect.iscoroutinefunction(transcribe):
-            text = await transcribe(wav, language=selected_language)
-        else:
-            text = await asyncio.to_thread(
-                self._transcribe_without_native_noise,
-                transcribe,
-                wav,
-                selected_language,
+        speaker_task: asyncio.Task[str] | None = None
+        if self._speaker_identifier is not None:
+            speaker_task = asyncio.create_task(
+                asyncio.to_thread(self._speaker_identifier.identify_wav, wav)
             )
+        transcribe = self._transcriber.transcribe_wav
+        try:
+            if inspect.iscoroutinefunction(transcribe):
+                text = await transcribe(wav, language=selected_language)
+            else:
+                text = await asyncio.to_thread(
+                    self._transcribe_without_native_noise,
+                    transcribe,
+                    wav,
+                    selected_language,
+                )
+            speaker_id = await speaker_task if speaker_task is not None else None
+        except BaseException:
+            if speaker_task is not None and not speaker_task.done():
+                speaker_task.cancel()
+            raise
         if not isinstance(text, str):
             raise RuntimeError("local transcriber returned a non-text result")
         return stt.SpeechEvent(
@@ -151,9 +166,17 @@ class BufferedLocalTranscriberSTT(stt.STT):
                     text=text.strip(),
                     language=selected_language,
                     confidence=1.0,
+                    speaker_id=speaker_id,
                 )
             ],
         )
+
+    def reset_speakers(self) -> bool:
+        reset = getattr(self._speaker_identifier, "reset", None)
+        if not callable(reset):
+            return False
+        reset()
+        return True
 
     def _transcribe_without_native_noise(
         self,
@@ -215,6 +238,8 @@ class JapaneseCallListenerAgent:
         result_topic: str | None = None,
         on_result: Any | None = None,
         on_transcript: Any | None = None,
+        on_speaker_status: Any | None = None,
+        speaker_identifier: Any | None = None,
         debug: bool = False,
     ) -> None:
         self.transcriber = transcriber
@@ -223,6 +248,8 @@ class JapaneseCallListenerAgent:
         self.result_topic = _optional_name(result_topic, "result_topic")
         self.on_result = on_result
         self.on_transcript = on_transcript
+        self.on_speaker_status = on_speaker_status
+        self.speaker_identifier = speaker_identifier
         self.debug = debug
         provider = _required_name(
             getattr(transcriber, "provider", type(transcriber).__name__),
@@ -237,6 +264,15 @@ class JapaneseCallListenerAgent:
             "handoffAgent": self.handoff,
             "transcriptionProvider": provider,
         }
+        if speaker_identifier is not None:
+            self.vifu_metadata["speakerIdentificationProvider"] = _required_name(
+                getattr(
+                    speaker_identifier,
+                    "provider",
+                    type(speaker_identifier).__name__,
+                ),
+                "speaker identification provider",
+            )
         self._app: Any | None = None
         self._endpoint: str | None = None
         self._stt: BufferedLocalTranscriberSTT | None = None
@@ -263,12 +299,16 @@ class JapaneseCallListenerAgent:
         if callable(prepare):
             prepare()
         try:
+            prepare_speakers = getattr(self.speaker_identifier, "prepare", None)
+            if callable(prepare_speakers):
+                prepare_speakers()
             self._stt = BufferedLocalTranscriberSTT(
                 self.transcriber,
                 language=self.language,
+                speaker_identifier=self.speaker_identifier,
                 show_native_logs=self.debug,
             )
-        except (TypeError, ValueError) as error:
+        except (SpeakerIdentificationError, TypeError, ValueError) as error:
             raise VoiceConfigurationError(str(error)) from error
 
     def vifu_bind(
@@ -302,6 +342,9 @@ class JapaneseCallListenerAgent:
         close = getattr(self.transcriber, "close", None)
         if callable(close):
             close()
+        close_speakers = getattr(self.speaker_identifier, "close", None)
+        if callable(close_speakers):
+            close_speakers()
         self._stt = None
         self._app = None
         self._endpoint = None
@@ -321,6 +364,7 @@ class JapaneseCallListenerAgent:
                 "provider": self._provider_name(),
                 "protocol": "japanese-phone-call.transcript.v1",
                 "isFinal": event["isFinal"],
+                "speakerRole": event.get("speakerRole", "caller"),
             },
         ):
             output: dict[str, Any] = {
@@ -335,6 +379,12 @@ class JapaneseCallListenerAgent:
                 return output
             if _is_non_speech_transcript(event["text"]):
                 output["ignoredReason"] = "non_speech"
+                return output
+            if event.get("speakerRole") == "self":
+                output["ignoredReason"] = "self_speech"
+                return output
+            if event.get("speakerRole") == "unknown":
+                output["ignoredReason"] = "unknown_speaker"
                 return output
             if self._is_recent_duplicate(event):
                 output["ignoredReason"] = "duplicate"
@@ -391,6 +441,7 @@ class JapaneseCallListenerAgent:
         if self._stt is None:
             self.prepare()
         assert self._stt is not None
+        speaker_enrollment_required = self._stt.reset_speakers()
         ctx.log_context_fields = {"room": ctx.room.name}
         await ctx.connect(auto_subscribe=AutoSubscribe.SUBSCRIBE_ALL)
         participant = await utils.wait_for_participant(ctx.room)
@@ -416,6 +467,8 @@ class JapaneseCallListenerAgent:
                 "voiceSessionId": ctx.room.name,
                 "participantIdentity": participant.identity,
                 "speakerId": event.speaker_id,
+                "speakerRole": _speaker_role(event.speaker_id),
+                "speakerEnrollment": event.speaker_id == "self-enrollment",
                 "language": str(event.language or self.language),
                 "text": text,
                 "isFinal": True,
@@ -434,6 +487,15 @@ class JapaneseCallListenerAgent:
                 audio_output=False,
             ),
         )
+        if speaker_enrollment_required and self.on_speaker_status is not None:
+            callback_result = self.on_speaker_status(
+                {
+                    "type": "speaker_status",
+                    "state": "enrollment_required",
+                }
+            )
+            if inspect.isawaitable(callback_result):
+                await callback_result
         logger.info("Local Japanese call transcription started")
 
     def _enqueue_final_transcript(
@@ -533,39 +595,6 @@ class JapaneseCallListenerAgent:
 
 
 @contextmanager
-def _native_stderr(*, visible: bool) -> Iterator[None]:
-    """Hide native model initialization chatter while preserving exceptions."""
-    if visible:
-        yield
-        return
-    with _NATIVE_STDERR_LOCK:
-        saved_fd: int | None = None
-        null_fd: int | None = None
-        try:
-            sys.stderr.flush()
-            stderr_fd = sys.stderr.fileno()
-            saved_fd = os.dup(stderr_fd)
-            null_fd = os.open(os.devnull, os.O_WRONLY)
-        except (AttributeError, OSError):
-            if saved_fd is not None:
-                os.close(saved_fd)
-            if null_fd is not None:
-                os.close(null_fd)
-            yield
-            return
-        try:
-            os.dup2(null_fd, stderr_fd)
-            yield
-        finally:
-            try:
-                sys.stderr.flush()
-            finally:
-                os.dup2(saved_fd, stderr_fd)
-                os.close(saved_fd)
-                os.close(null_fd)
-
-
-@contextmanager
 def _livekit_console_banners(*, visible: bool) -> Iterator[None]:
     """Hide only the deprecated LiveKit wrapper banners in product mode."""
     if visible:
@@ -642,7 +671,21 @@ def _voice_transcript(value: object, *, language: str) -> dict[str, Any]:
     speaker_id = event.get("speakerId")
     if speaker_id is not None:
         event["speakerId"] = _required_name(speaker_id, "speakerId")
+    speaker_role = event.get("speakerRole")
+    if speaker_role is not None:
+        normalized_role = _required_name(speaker_role, "speakerRole")
+        if normalized_role not in {"self", "caller", "unknown"}:
+            raise ValueError("speakerRole must be self, caller, or unknown")
+        event["speakerRole"] = normalized_role
     return event
+
+
+def _speaker_role(speaker_id: str | None) -> str:
+    if speaker_id in {"self", "self-enrollment"}:
+        return "self"
+    if isinstance(speaker_id, str) and speaker_id.startswith("caller-"):
+        return "caller"
+    return "unknown"
 
 
 def _is_non_speech_transcript(text: str) -> bool:

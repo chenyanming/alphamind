@@ -138,6 +138,54 @@ class MultiAgentHandoffTests(unittest.TestCase):
                 ["japanese-call-listener"],
             )
 
+    def test_self_and_unknown_speakers_stop_at_the_voice_agent(self) -> None:
+        for sequence, role in enumerate(("self", "unknown"), start=1):
+            with (
+                self.subTest(role=role),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                runtime = VifuRuntime(
+                    "japanese-call-speaker-route-test",
+                    data_dir=directory,
+                )
+                specialist_calls: list[object] = []
+                voice = JapaneseCallListenerAgent(
+                    handoff="japanese-reply-agent",
+                    transcriber=SimpleNamespace(
+                        provider="test-local-whisper",
+                        model="test-whisper.bin",
+                    ),
+                )
+                runtime.agent("japanese-call-listener", voice)
+                runtime.agent(
+                    "japanese-reply-agent",
+                    lambda request: specialist_calls.append(request) or {},
+                )
+                voice._app = runtime
+                voice._endpoint = "japanese-call-listener"
+
+                result = voice.dispatch_transcript(
+                    {
+                        "type": "transcript",
+                        "voiceSessionId": f"voice-speaker-{sequence}",
+                        "language": "ja-JP",
+                        "text": "予約の名前をお伝えします。",
+                        "isFinal": True,
+                        "sequence": sequence,
+                        "speakerId": "self" if role == "self" else "unknown",
+                        "speakerRole": role,
+                    }
+                )
+                traces = runtime.pending_traces()
+                runtime.close()
+
+            self.assertIsNone(result)
+            self.assertEqual(specialist_calls, [])
+            self.assertEqual(
+                [trace["endpoint"] for trace in traces],
+                ["japanese-call-listener"],
+            )
+
     def test_duplicate_final_turn_is_suppressed_only_during_debounce_window(
         self,
     ) -> None:

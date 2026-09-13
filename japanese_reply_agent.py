@@ -3,20 +3,20 @@ from __future__ import annotations
 import json
 import logging
 import re
-from difflib import SequenceMatcher
 from typing import Annotated, Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from models import CallAssistInput
+from native_output import native_stderr
 from reasoning_config import ReasoningConfig
 from result_sink import CallAssistResultSink
 from vifu import AgentRequest
 
 logger = logging.getLogger("alphamind-reasoning")
 
-MAX_REASONING_ATTEMPTS = 3
-MAX_REASONING_TOKENS = 500
+MAX_REASONING_ATTEMPTS = 2
+MAX_REASONING_TOKENS = 240
 _WEEKDAY_TRANSLATIONS = {
     "月曜日": ("星期一", "周一", "礼拜一"),
     "火曜日": ("星期二", "周二", "礼拜二"),
@@ -38,8 +38,12 @@ _CONFIRMATION_MARKERS = (
     "納期",
     "予定",
     "予約",
-    "配達",
-    "お届け",
+    "登録",
+    "名前",
+    "住所",
+    "電話番号",
+    "変更",
+    "確認",
     "約束",
     "円",
     "個",
@@ -52,97 +56,72 @@ _SOURCE_TERM_TRANSLATIONS = {
     "午後": ("下午",),
     "来週": ("下周", "下星期", "下礼拜"),
     "今週": ("本周", "这周", "这个星期", "本星期", "这个礼拜"),
-    "見積書": ("报价单", "报价书", "估价单", "估价书"),
 }
 _UNNATURAL_REPLY_FRAGMENTS = {
     "申しありません": "申し訳ありません",
     "対します": "対応します or 対応いたします",
-}
-_SINGLE_DIGIT_CHINESE = {
-    "0": ("0", "零"),
-    "1": ("1", "一"),
-    "2": ("2", "二", "两"),
-    "3": ("3", "三"),
-    "4": ("4", "四"),
-    "5": ("5", "五"),
-    "6": ("6", "六"),
-    "7": ("7", "七"),
-    "8": ("8", "八"),
-    "9": ("9", "九"),
+    "他時": "別の時間",
+    "了解了": "分かりました or 承知しました",
 }
 _CJK_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _JAPANESE_KANA = re.compile(r"[\u3040-\u30ff\uff66-\uff9f]")
+_JAPANESE_TIME = re.compile(r"(?:午前|午後)?[0-9０-９]+時(?:[0-9０-９]+分)?")
+_CHINESE_WEEKDAY_IN_JAPANESE = re.compile(r"週[一二三四五六日天]")
+_QUESTION_ENDING = re.compile(r"か[?？。]?$|[?？]$")
+_TRANSLATION_SEPARATOR = re.compile(r"\s[/／]\s")
+_INFORMATION_REQUEST = re.compile(
+    r"(?:教えて(?:いただけ|もらえ|もらい|ください)|お聞かせください)"
+)
 
 
 class GeneratedSuggestedReply(BaseModel):
-    """Unambiguous field names for the small model's output tool."""
+    """Compact internal fields keep local-model response latency bounded."""
 
     model_config = ConfigDict(extra="forbid")
 
-    japanese_reply: str = Field(
+    japanese: str = Field(
         min_length=1,
-        max_length=240,
-        description=(
-            "One short, natural Japanese response option from the listener's "
-            "point of view. It must answer the caller's latest statement or "
-            "request directly. Never repeat the caller's words as the answer. "
-            "Use 申し訳ありません, never 申しありません."
-        ),
+        max_length=60,
+        description="用户可以直接对来电者说出的简短、自然日语；不能复述对方原话。",
     )
-    simplified_chinese_meaning: str = Field(
+    chinese: str = Field(
         min_length=1,
-        max_length=300,
-        description=(
-            "The Japanese reply's meaning in Simplified Chinese. "
-            "Never copy Japanese text into this field."
-        ),
+        max_length=60,
+        description="这句日语回答的简体中文含义；不能包含日语假名。",
     )
 
 SYSTEM_PROMPT = """
-You help a foreign resident in Japan understand and answer a Japanese phone
-call. The current user interface uses Simplified Chinese. You never produce
-audio and never take an action on the user's behalf.
+你帮助生活在日本的外国人理解并回应日语电话。只分析 `latest_ja`；仅当
+最新一句明确指代前文时，才使用 `previous_ja`。不要从示例或前文带入最新
+一句没有提到的话题、物品、业务或行动。
 
-For each final transcript update:
-1. Translate the latest Japanese utterance into concise Simplified Chinese.
-2. Suggest two or three short, polite Japanese response options with their
-   Chinese meanings.
-3. Make every option directly relevant to the caller's latest utterance.
-   Give distinct choices when useful, such as accept, request a change, or ask
-   the caller to repeat or clarify. Do not add an unrelated generic response.
-4. If the utterance includes a date, price, quantity, deadline, promise, or
-   action item, set confirmation_required.
-5. Explain exactly what the user must confirm before a reply.
-   Use an empty confirmation_simplified_chinese string when no confirmation
-   is required.
-6. Preserve uncertainty. Do not invent names, numbers, commitments, or context.
-7. Call publish_call_assist exactly once. Do not answer outside the tool call.
+语音转写可能包含错字。用简体中文概括能够可靠理解的整体意思；无法辨认的
+片段写成“（部分内容听不清）”。任何中文字段都不能复制日文或包含日语假名。
+保留能够确定的人名、日期、时间、价格和数量，但不要猜测，不要创造事实、
+承诺或动作，也不能颠倒来电者与接听者的角色。`translation_zh` 只能翻译
+对方原话，不能加入回答建议，也不能把原句改写成新的追问。
+`Xを教えてもらえますか／いただけますか` 表示来电者请接听者提供 X；
+翻译、确认提示和建议回答都必须保持这个方向，不能反过来让来电者提供 X。
+如果输入没有给出 X 的真实值，绝不能替用户填写示例姓名、日期、金额或号码；
+建议用户表示会提供真实信息，或者请对方稍候以便核对。
 
-Accuracy rules:
-- Japanese weekdays map exactly to Chinese: 月曜日=星期一, 火曜日=星期二,
-  水曜日=星期三, 木曜日=星期四, 金曜日=星期五, 土曜日=星期六,
-  日曜日=星期日.
-- Every suggested response must answer the caller's latest utterance.
-- Response options must be distinct. Do not rewrite the same answer three ways.
-- Requests, deadlines, dates, prices, quantities, promises, and action items
-  always require confirmation.
+严格调用一次 `card`。`translation_zh` 是一条简洁的中文解释。`replies` 必须
+包含两个简短、礼貌且含义不同的日语回答，并附各自的简体中文含义：第一个
+直接回答或回应来电者，第二个提供另一种真实可选的回答、拒绝或澄清方式。
+这些是供用户选择的说法，不要替用户决定事实。对方要求回答是或否时，必须
+提供肯定与否定/澄清两种接听者回答，不能用“知道了”代替回答。`confirm` 为 true 时，
+`confirmation_zh` 说明回答前应确认什么；否则留空。工具调用外不要输出文字。
+当输入指定 `output_mode=translation_only` 时，应用会生成信息保护型回答；
+工具只要求 `translation_zh`，不要自行生成姓名、日期、号码、回复或确认内容。
 
-Example:
-Source: 明日の午後2時に荷物をお届けしてもよろしいでしょうか。
-Translation: 明天下午两点给您送货，可以吗？
-Replies:
-- はい、午後2時で大丈夫です。 / 可以，下午两点没问题。
-- 申し訳ありません。別の時間に変更できますか。 / 不好意思，可以改到其他时间吗？
-- すみません、もう一度ゆっくりお願いします。 / 不好意思，请再慢慢说一遍。
-Confirmation required: true.
-Confirmation: 请确认明天下午2点是否方便收货。
-
-Source: おはようございます。
-Translation: 早上好。
-Replies:
-- おはようございます。 / 早上好。
-- お電話ありがとうございます。 / 谢谢您的来电。
-Confirmation required: false.
+以下示例只说明来电者与接听者的视角，不能作为当前电话的上下文：
+- `今、お時間よろしいでしょうか。`：中文“请问现在方便吗？”；可选回答
+  `はい、大丈夫です。`（可以，没问题。）或
+  `申し訳ありません。後でもよろしいですか。`（不好意思，稍后可以吗？）
+- `今は難しいです。`：中文“现在不方便。”；可选回答
+  `分かりました。ご都合の良い時間を教えてください。`
+  （明白了，请告诉我您方便的时间。）或
+  `では、また後でお電話します。`（那我稍后再打给您。）
 """.strip()
 
 
@@ -161,50 +140,80 @@ def create_strands_agent(
         strands_model,
     )
 
-    @tool
-    def publish_call_assist(
-        translation_simplified_chinese: Annotated[
-            str,
-            "A concise Simplified Chinese translation of the Japanese utterance. "
-            "Never answer in English or Japanese.",
-        ],
-        confirmation_required: Annotated[
-            bool,
-            "True only when the user must confirm a date, price, quantity, "
-            "deadline, promise, request, or action item.",
-        ],
-        confirmation_simplified_chinese: Annotated[
-            str,
-            "What the user must confirm, written only in Simplified Chinese; "
-            "empty when confirmation_required is false. Preserve every date, "
-            "time, and number from the caller. Chinese number words are valid, "
-            "so 2, 二, and 两 can express the same stated value.",
-        ],
-        suggested_replies: list[GeneratedSuggestedReply] = Field(
-            min_length=2,
-            max_length=3,
-        ),
-    ) -> dict[str, Any]:
-        """Produce one validated visual call-assistance card. Never produces audio."""
-        validated_replies = [
-            GeneratedSuggestedReply.model_validate(reply)
-            for reply in suggested_replies
-        ]
-        return result_sink.publish_from_tool(
-            source_text=source_text,
-            translation_zh=translation_simplified_chinese,
-            suggested_replies=[
-                {
-                    "japanese": validated.japanese_reply.replace(
-                        "申しありません", "申し訳ありません"
-                    ),
-                    "chinese": validated.simplified_chinese_meaning,
-                }
-                for validated in validated_replies
+    confirmation_required = _requires_confirmation(source_text)
+    information_request = _caller_requests_listener_information(source_text)
+
+    if information_request:
+
+        @tool(name="card", description="翻译来电者向接听者提出的信息请求。")
+        def publish_information_request(
+            translation_zh: Annotated[
+                str,
+                "来电者请接听者提供什么信息；只用简体中文，不能包含日语。",
             ],
-            confirmation_required=confirmation_required,
-            confirmation_zh=confirmation_simplified_chinese,
-        )
+        ) -> dict[str, Any]:
+            """Publish an information request without inventing the user's values."""
+            return result_sink.publish_from_tool(
+                source_text=source_text,
+                translation_zh=translation_zh,
+                suggested_replies=[
+                    {
+                        "japanese": "はい、確認してお伝えします。",
+                        "chinese": "好的，我确认后告诉您。",
+                    },
+                    {
+                        "japanese": "申し訳ありません。確認しますので、少々お待ちください。",
+                        "chinese": "不好意思，我确认一下，请稍等。",
+                    },
+                ],
+                confirmation_required=confirmation_required,
+                confirmation_zh=(
+                    "请先核对自己要向来电者提供的信息是否准确。"
+                    if confirmation_required
+                    else ""
+                ),
+            )
+
+        output_tool = publish_information_request
+    else:
+
+        @tool(name="card", description="输出一张日语电话辅助卡。")
+        def publish_call_assist(
+            translation_zh: Annotated[
+                str,
+                "简洁的简体中文解释；不能复制日文或包含日语假名。",
+            ],
+            confirmation_zh: Annotated[
+                str,
+                "回答前要确认的内容，用简体中文；confirm 为 false 时留空。",
+            ],
+            replies: list[GeneratedSuggestedReply] = Field(
+                min_length=2,
+                max_length=2,
+            ),
+        ) -> dict[str, Any]:
+            """Produce one validated visual call-assistance card."""
+            validated_replies = [
+                GeneratedSuggestedReply.model_validate(reply)
+                for reply in replies
+            ]
+            return result_sink.publish_from_tool(
+                source_text=source_text,
+                translation_zh=translation_zh,
+                suggested_replies=[
+                    {
+                        "japanese": validated.japanese.replace(
+                            "申しありません", "申し訳ありません"
+                        ),
+                        "chinese": validated.chinese,
+                    }
+                    for validated in validated_replies
+                ],
+                confirmation_required=confirmation_required,
+                confirmation_zh=confirmation_zh,
+            )
+
+        output_tool = publish_call_assist
 
     class EndTurnAfterPublish:
         """Finish after the output tool; a second model acknowledgement adds no value."""
@@ -243,7 +252,7 @@ def create_strands_agent(
         )
     return Agent(
         model=model,
-        tools=[publish_call_assist],
+        tools=[output_tool],
         system_prompt=_system_prompt(request, reasoning),
         # The default Strands callback is a developer trace printer. The app
         # records traces and presents the validated Assist Card separately.
@@ -266,106 +275,73 @@ def analyze_transcript(
     rejected_card: dict[str, Any] | None = None,
 ) -> None:
     source_text = str(transcript_context[-1].get("text") or "")
-    preserved_terms = [term for term in _WEEKDAY_TRANSLATIONS if term in source_text]
     confirmation_required = _requires_confirmation(source_text)
-    if confirmation_required:
-        reply_perspective = (
-            "Give two or three distinct options from the listener's point of "
-            "view. Include an option that accepts the request and an option "
-            "that asks for a change or clarification when relevant."
+    question = _is_question(source_text)
+    yes_no = _requests_yes_no_answer(source_text)
+    information_request = _caller_requests_listener_information(source_text)
+    prompt = {
+        "latest_ja": source_text,
+        "confirm": confirmation_required,
+        "utterance_type": "question" if question else "statement",
+        "reply_strategy": (
+            "一项肯定回答；一项否定或要求澄清的回答；都使用接听者口吻"
+            if yes_no
+            else (
+                "接听者表示会提供或先确认所需信息；第二项请求澄清或稍候"
+                if information_request
+                else (
+                "直接回答；第二项给出不同的拒绝、另一种选择或询问缺失信息"
+                if question
+                else "回应来电者；第二项提出相关追问或另一种选择"
+                )
+            )
+        ),
+        "output_language": "所有 *_zh 和 replies.chinese 字段只能使用简体中文",
+        "translation_rule": "只翻译 latest_ja，不得添加未提到的信息或回答建议",
+    }
+    if yes_no:
+        prompt["answer_mode"] = "yes_no"
+        prompt["reply_constraints"] = [
+            "一个回答以「はい」开头",
+            "另一个回答以「いいえ」开头，或明确请求对方重述需要确认的内容",
+            "不能把对方的是非问题原样反问回去",
+        ]
+    if information_request:
+        prompt["output_mode"] = "translation_only"
+        prompt["speech_act"] = "caller_requests_information_from_listener"
+        prompt["role_contract"] = (
+            "来电者正在请接听者提供信息；回答必须由接听者说给来电者"
         )
-    else:
-        reply_perspective = (
-            "Give two or three distinct natural responses to the caller. Every "
-            "option must address the latest utterance without invented context."
-        )
-    confirmation_terms = [
-        accepted_chinese[0]
+        prompt["information_reply_constraints"] = [
+            "第一个回答直接表示将提供或先确认所需信息",
+            "不能要求来电者提供同一信息",
+            "输入没有提供用户的真实值；禁止编造姓名、日期、金额、号码或示例值",
+            "使用「お伝えします」「確認します」或「少々お待ちください」",
+            "确认提示应提醒接听者核对自己将要提供的信息",
+        ]
+    previous = [
+        str(item.get("text") or "")
+        for item in transcript_context[-3:-1]
+        if item.get("text")
+    ]
+    if previous:
+        prompt["previous_ja"] = previous
+    must_preserve = [
+        {"ja": japanese, "zh": accepted_chinese[0]}
         for japanese, accepted_chinese in (
             *_WEEKDAY_TRANSLATIONS.items(),
             *_SOURCE_TERM_TRANSLATIONS.items(),
         )
         if japanese in source_text
     ]
-    confirmation_numbers = [
-        {
-            "source": number,
-            "accepted": list(_number_equivalents(number)),
-        }
-        for number in re.findall(r"[0-9０-９]+", source_text)
-    ]
-    constraints: dict[str, Any] = {
-        "confirmationRequired": confirmation_required,
-        "replyPerspective": reply_perspective,
-        "replyMustNotCopySource": True,
-        "replyCount": "2 or 3",
-        "replyOptionsMustBeDistinctAndRelevant": True,
-        "preserveJapaneseTermsInReply": preserved_terms,
-    }
-    prompt = {
-        "task": "Publish assistance for the latest final utterance.",
-        "transcript": transcript_context,
-        "constraints": constraints,
-    }
-    if confirmation_required:
-        if "お届け" in source_text or "配達" in source_text:
-            constraints["scenario"] = (
-                "The caller asks whether the caller can deliver an item. The "
-                "user receives the delivery and does not deliver the item."
-            )
-            constraints["suggestedReplyShapes"] = [
-                "はい、午後2時で大丈夫です。",
-                "申し訳ありません。別の時間に変更できますか。",
-                "すみません、もう一度ゆっくりお願いします。",
-            ]
-            constraints["forbiddenReplyContent"] = [
-                "荷物をお届けします",
-                "配達します",
-            ]
-        else:
-            weekday = next(
-                (term for term in _WEEKDAY_TRANSLATIONS if term in source_text),
-                None,
-            )
-            if "送って" in source_text or "送付" in source_text:
-                action = "お送りします。"
-            else:
-                action = "対応いたします。"
-            deadline = f"{weekday}までに" if weekday is not None else ""
-            chinese_weekday = (
-                _WEEKDAY_TRANSLATIONS[weekday][1] if weekday is not None else ""
-            )
-            chinese_action = (
-                "发送" if "送って" in source_text or "送付" in source_text else "处理"
-            )
-            constraints["suggestedReplyShape"] = (
-                f"承知しました。{deadline}{action}"
-            )
-            constraints["suggestedReplyChineseShape"] = (
-                f"明白了，我会在{chinese_weekday}前{chinese_action}。"
-                if chinese_weekday
-                else f"明白了，我会{chinese_action}。"
-            )
-        constraints["confirmationChineseMustInclude"] = confirmation_terms
-        if confirmation_numbers:
-            constraints["confirmationNumberEquivalents"] = confirmation_numbers
-        if "お届け" in source_text or "配達" in source_text:
-            constraints["confirmationGuidance"] = (
-                "Ask the user to confirm whether the stated delivery time works. "
-                "Repeat the exact date and time."
-            )
-        else:
-            constraints["confirmationGuidance"] = (
-                "Ask the user to confirm the stated deadline and commitment. Do not "
-                "ask what an already-stated date, weekday, or action means."
-            )
+    if must_preserve:
+        prompt["facts"] = must_preserve
+    stated_times = _JAPANESE_TIME.findall(source_text)
+    if stated_times:
+        prompt["exact_times"] = stated_times
     if validation_feedback:
-        prompt["validationFeedback"] = validation_feedback
-        prompt["previousRejectedCard"] = rejected_card
-        prompt["retryInstruction"] = (
-            "The previous card was rejected. Correct every listed issue and call "
-            "publish_call_assist exactly once."
-        )
+        prompt["fix"] = validation_feedback
+        prompt["rejected"] = rejected_card
     agent(json.dumps(prompt, ensure_ascii=False, separators=(",", ":")))
 
 
@@ -377,6 +353,23 @@ def validate_assist_card(source_text: str, card: Any) -> list[str]:
         errors.append(
             "The Chinese translation must use Simplified Chinese and must not "
             "contain Japanese kana."
+        )
+    if _TRANSLATION_SEPARATOR.search(translation):
+        errors.append("The Chinese translation must contain one translation only.")
+    information_request = _caller_requests_listener_information(source_text)
+    if information_request and any(
+        phrase in translation
+        for phrase in (
+            "需要对方提供",
+            "请对方提供",
+            "让对方提供",
+            "对方需要提供",
+            "向对方询问",
+        )
+    ):
+        errors.append(
+            "The caller asks the listener to provide information; the Chinese "
+            "translation must not reverse that direction."
         )
     for japanese, accepted_chinese in _WEEKDAY_TRANSLATIONS.items():
         if japanese in source_text and not any(
@@ -406,39 +399,58 @@ def validate_assist_card(source_text: str, card: Any) -> list[str]:
     ]
     if len(normalized_replies) < 2:
         errors.append("The Assist Card must contain at least two response options.")
-    for japanese in _WEEKDAY_TRANSLATIONS:
-        if japanese in source_text and not any(
-            japanese in reply.japanese for reply in card.suggested_replies
-        ):
+    if information_request and card.suggested_replies:
+        first_reply = card.suggested_replies[0].japanese
+        directly_responds = (
+            bool(re.match(r"^はい(?:[\s、。,.！!]|$)", first_reply))
+            and "教えて" not in first_reply
+        ) or any(
+            marker in first_reply
+            for marker in ("お伝えします", "確認します", "少々お待ち")
+        )
+        if not directly_responds:
             errors.append(
-                f"At least one Japanese reply must preserve the exact weekday {japanese}."
+                "The caller asks the listener for information. The first Japanese "
+                "reply must use お伝えします or 確認します, or start with はい "
+                "without inventing the requested value."
+            )
+        source_numbers = set(re.findall(r"[0-9０-９]+", source_text))
+        reply_numbers = {
+            number
+            for reply in card.suggested_replies
+            for number in re.findall(r"[0-9０-９]+", reply.japanese)
+        }
+        invented_numbers = reply_numbers - source_numbers
+        if invented_numbers:
+            errors.append(
+                "The suggested replies must not invent requested values such as "
+                "dates or numbers: " + ", ".join(sorted(invented_numbers))
+            )
+    if _requests_yes_no_answer(source_text):
+        has_yes = any(
+            re.match(r"^はい(?:[\s、。,.！!]|$)", reply.japanese)
+            for reply in card.suggested_replies
+        )
+        has_no_or_clarification = any(
+            re.match(r"^いいえ(?:[\s、。,.！!]|$)", reply.japanese)
+            or any(
+                marker in reply.japanese
+                for marker in ("もう一度", "教えて", "分かりません")
+            )
+            for reply in card.suggested_replies
+        )
+        if not has_yes or not has_no_or_clarification:
+            errors.append(
+                "A yes/no request needs one reply starting with はい and another "
+                "starting with いいえ or asking the caller to clarify."
             )
     if any(reply == normalized_source for reply in normalized_replies):
         errors.append(
             "A suggested reply must answer the speaker and must not repeat the "
             "source request."
         )
-    elif len(normalized_source) >= 16 and any(
-        SequenceMatcher(None, normalized_source, reply).ratio() >= 0.7
-        for reply in normalized_replies
-    ):
-        errors.append(
-            "A suggested reply is too similar to the source request. It must "
-            "respond from the user's point of view."
-        )
     if len(set(normalized_replies)) != len(normalized_replies):
         errors.append("Every suggested Japanese reply must be unique.")
-    if "お届け" in source_text or "配達" in source_text:
-        reversed_delivery_phrases = ("荷物をお届けします", "配達します")
-        if any(
-            phrase in reply.japanese
-            for reply in card.suggested_replies
-            for phrase in reversed_delivery_phrases
-        ):
-            errors.append(
-                "The caller delivers the item. A suggested reply must not say "
-                "that the user will deliver it."
-            )
     if any(
         not any(
             "\u3040" <= character <= "\u30ff" for character in reply.japanese
@@ -448,6 +460,14 @@ def validate_assist_card(source_text: str, card: Any) -> list[str]:
         errors.append(
             "Every suggested_replies.japanese value must be natural Japanese "
             "and include hiragana or katakana."
+        )
+    if any(
+        _CHINESE_WEEKDAY_IN_JAPANESE.search(reply.japanese)
+        for reply in card.suggested_replies
+    ):
+        errors.append(
+            "A Japanese reply contains Chinese weekday wording; use a natural "
+            "Japanese weekday such as 金曜日."
         )
     for fragment, replacements in _UNNATURAL_REPLY_FRAGMENTS.items():
         if any(fragment in reply.japanese for reply in card.suggested_replies):
@@ -469,27 +489,18 @@ def validate_assist_card(source_text: str, card: Any) -> list[str]:
             "The confirmation must use Simplified Chinese and must not contain "
             "Japanese kana."
         )
-    if card.confirmation_required:
-        confirmation = card.confirmation_zh or ""
-        for number in re.findall(r"[0-9０-９]+", source_text):
-            if not any(
-                equivalent in confirmation
-                for equivalent in _number_equivalents(number)
-            ):
-                errors.append(
-                    f"The confirmation must preserve the stated number {number}."
-                )
-        for japanese, accepted_chinese in (
-            *_WEEKDAY_TRANSLATIONS.items(),
-            *_SOURCE_TERM_TRANSLATIONS.items(),
-        ):
-            if japanese in source_text and not any(
-                candidate in confirmation for candidate in accepted_chinese
-            ):
-                errors.append(
-                    f"The confirmation must preserve {japanese} as one of: "
-                    + ", ".join(accepted_chinese)
-                )
+    if (
+        information_request
+        and card.confirmation_required
+        and not any(
+            marker in (card.confirmation_zh or "")
+            for marker in ("自己", "要提供", "需提供", "将提供")
+        )
+    ):
+        errors.append(
+            "The caller asks the listener for information. The confirmation must "
+            "tell the listener to verify what they will provide."
+        )
     for reply in card.suggested_replies:
         for japanese, accepted_chinese in _WEEKDAY_TRANSLATIONS.items():
             if japanese in reply.japanese and not any(
@@ -525,9 +536,18 @@ def _requires_confirmation(source_text: str) -> bool:
     ) or any(character.isdigit() for character in source_text)
 
 
-def _number_equivalents(value: str) -> tuple[str, ...]:
-    normalized = value.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
-    return _SINGLE_DIGIT_CHINESE.get(normalized, (normalized,))
+def _is_question(source_text: str) -> bool:
+    return bool(_QUESTION_ENDING.search(source_text.strip()))
+
+
+def _requests_yes_no_answer(source_text: str) -> bool:
+    return "はい" in source_text and any(
+        negative in source_text for negative in ("いいえ", "いえ")
+    )
+
+
+def _caller_requests_listener_information(source_text: str) -> bool:
+    return bool(_INFORMATION_REQUEST.search(source_text))
 
 
 def _is_chinese_text(value: str) -> bool:
@@ -539,12 +559,13 @@ class JapaneseReplyAgent:
 
     vifu_name = "Japanese Reply Agent"
     vifu_capability = "japanese-call-replies"
-    # Three validated local-model attempts can exceed one minute on a cold CPU.
+    # One corrective retry stays bounded on a cold local model.
     vifu_timeout_ms = 180_000
     vifu_instructions = SYSTEM_PROMPT
 
     def __init__(self, reasoning: ReasoningConfig | None = None) -> None:
         self._app: Any | None = None
+        self.debug = False
         self._reasoning = (
             reasoning if reasoning is not None else ReasoningConfig.from_env()
         )
@@ -561,12 +582,14 @@ class JapaneseReplyAgent:
         self._reasoning.validate()
         prepare = getattr(self._reasoning.provider, "prepare", None)
         if callable(prepare):
-            prepare()
+            with native_stderr(visible=self.debug):
+                prepare()
 
     def close(self) -> None:
         close = getattr(self._reasoning.provider, "close", None)
         if callable(close):
-            close()
+            with native_stderr(visible=self.debug):
+                close()
 
     def __call__(self, request: AgentRequest) -> dict[str, Any]:
         if self._app is None:
@@ -585,13 +608,14 @@ class JapaneseReplyAgent:
         rejected_card: dict[str, Any] | None = None
         for attempt in range(1, MAX_REASONING_ATTEMPTS + 1):
             result_sink = CallAssistResultSink()
-            agent = create_strands_agent(
-                self._app,
-                request,
-                result_sink,
-                source_text,
-                reasoning,
-            )
+            with native_stderr(visible=self.debug):
+                agent = create_strands_agent(
+                    self._app,
+                    request,
+                    result_sink,
+                    source_text,
+                    reasoning,
+                )
             result_sink.begin_agent_turn()
             try:
                 with request.trace.stage(
@@ -603,12 +627,13 @@ class JapaneseReplyAgent:
                         "attempt": attempt,
                     },
                 ):
-                    analyze_transcript(
-                        agent,
-                        transcript,
-                        validation_feedback=validation_feedback,
-                        rejected_card=rejected_card,
-                    )
+                    with native_stderr(visible=self.debug):
+                        analyze_transcript(
+                            agent,
+                            transcript,
+                            validation_feedback=validation_feedback,
+                            rejected_card=rejected_card,
+                        )
                 card = result_sink.finish_agent_turn()
             except Exception as error:
                 result_sink.abort_agent_turn()
@@ -627,14 +652,50 @@ class JapaneseReplyAgent:
                 attempt,
                 "; ".join(validation_feedback),
             )
-        if card is None or validation_feedback:
-            message = (
-                "Japanese reply reasoning could not produce a safe Assist Card: "
-                + "; ".join(validation_feedback)
+        if card is None:
+            raise RuntimeError("Japanese reply reasoning did not produce an Assist Card")
+        if validation_feedback:
+            logger.warning(
+                "Japanese reply reasoning remained uncertain after %s attempts: %s",
+                MAX_REASONING_ATTEMPTS,
+                "; ".join(validation_feedback),
             )
-            logger.error(message)
-            raise RuntimeError(message)
+            return _uncertain_assist_card(
+                source_text,
+                confirmation_required=_requires_confirmation(source_text),
+            )
         return card.model_dump(by_alias=True, exclude_none=True)
+
+
+def _uncertain_assist_card(
+    source_text: str,
+    *,
+    confirmation_required: bool,
+) -> dict[str, Any]:
+    """Return a safe clarification card when the local model output is unusable."""
+    sink = CallAssistResultSink()
+    sink.begin_agent_turn()
+    sink.publish_from_tool(
+        source_text=source_text,
+        translation_zh="这段话有部分内容没有听清，请先让对方重述关键信息。",
+        suggested_replies=[
+            {
+                "japanese": "すみません、もう一度ゆっくりお願いします。",
+                "chinese": "不好意思，请再慢慢说一遍。",
+            },
+            {
+                "japanese": "確認する内容を、もう一度教えていただけますか。",
+                "chinese": "可以再告诉我需要确认的内容吗？",
+            },
+        ],
+        confirmation_required=confirmation_required,
+        confirmation_zh=(
+            "部分内容没有听清，请勿直接确认，先让对方重述关键信息。"
+            if confirmation_required
+            else ""
+        ),
+    )
+    return sink.finish_agent_turn().model_dump(by_alias=True, exclude_none=True)
 
 
 def _endpoint_input(value: object) -> object:

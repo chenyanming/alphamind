@@ -52,6 +52,7 @@ class LocalAppTests(unittest.TestCase):
             registrations[0][1].transcriber.model,
             main.LOCAL_WHISPER_MODEL,
         )
+        self.assertEqual(main.LOCAL_WHISPER_MODEL, "ggml-small.bin")
         self.assertEqual(
             registrations[0][2]["metadata"]["role"],
             "japanese-call-listening",
@@ -70,6 +71,17 @@ class LocalAppTests(unittest.TestCase):
             main.main([])
 
         run.assert_called_once_with()
+
+    def test_debug_mode_controls_native_logs_for_both_agents(self) -> None:
+        def assert_debug_enabled() -> None:
+            self.assertTrue(main.voice_agent.debug)
+            self.assertTrue(main.reply_agent.debug)
+
+        with patch.object(main.app, "run", side_effect=assert_debug_enabled):
+            main.main(["--debug"])
+
+        self.assertFalse(main.voice_agent.debug)
+        self.assertFalse(main.reply_agent.debug)
 
     def test_demo_runs_one_two_agent_handoff_and_closes_the_app(self) -> None:
         card = {

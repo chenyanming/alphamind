@@ -11,6 +11,7 @@ from japanese_reply_agent import (
     JapaneseReplyAgent,
     SYSTEM_PROMPT,
     _system_prompt,
+    analyze_transcript,
     create_strands_agent,
     validate_assist_card,
 )
@@ -31,10 +32,13 @@ class CallAssistAgentTests(unittest.TestCase):
     def test_prompt_targets_foreign_residents_and_multiple_relevant_replies(
         self,
     ) -> None:
-        self.assertIn("foreign resident in Japan", SYSTEM_PROMPT)
-        self.assertIn("two or three", SYSTEM_PROMPT)
-        self.assertIn("directly relevant", SYSTEM_PROMPT)
+        self.assertIn("生活在日本的外国人", SYSTEM_PROMPT)
+        self.assertIn("含义不同", SYSTEM_PROMPT)
+        self.assertIn("部分内容听不清", SYSTEM_PROMPT)
+        self.assertIn("不要替用户决定事实", SYSTEM_PROMPT)
         self.assertNotIn("business-call assistant", SYSTEM_PROMPT)
+        self.assertNotIn("お届け", SYSTEM_PROMPT)
+        self.assertNotIn("配達", SYSTEM_PROMPT)
 
     def test_local_model_uses_the_prompt_from_python(self) -> None:
         request = SimpleNamespace(instructions="stale dashboard prompt")
@@ -89,17 +93,15 @@ class CallAssistAgentTests(unittest.TestCase):
                                         "id": "call_test",
                                         "type": "function",
                                         "function": {
-                                            "name": "publish_call_assist",
+                                            "name": "card",
                                             "arguments": (
-                                                '{"translation_simplified_chinese":'
-                                                '"请确认金额和日期。",'
-                                                '"suggested_replies":[{'
-                                                '"japanese_reply":"確認します。",'
-                                                '"simplified_chinese_meaning":"我来确认。"},{'
-                                                '"japanese_reply":"申しありません。もう一度お願いします。",'
-                                                '"simplified_chinese_meaning":"请再说一遍。"}],'
-                                                '"confirmation_required":true,'
-                                                '"confirmation_simplified_chinese":'
+                                                '{"translation_zh":"请确认金额和日期。",'
+                                                '"replies":[{'
+                                                '"japanese":"確認します。",'
+                                                '"chinese":"我来确认。"},{'
+                                                '"japanese":"申しありません。もう一度お願いします。",'
+                                                '"chinese":"请再说一遍。"}],'
+                                                '"confirmation_zh":'
                                                 '"请确认三万日元和下周五。"}'
                                             ),
                                         },
@@ -140,10 +142,10 @@ class CallAssistAgentTests(unittest.TestCase):
         )
         assert provider.request is not None
         tool_schema = provider.request["tools"][0]["function"]["parameters"]
-        reply_schema = tool_schema["properties"]["suggested_replies"]["items"]
-        replies_property = tool_schema["properties"]["suggested_replies"]
+        reply_schema = tool_schema["properties"]["replies"]["items"]
+        replies_property = tool_schema["properties"]["replies"]
         self.assertEqual(replies_property["minItems"], 2)
-        self.assertEqual(replies_property["maxItems"], 3)
+        self.assertEqual(replies_property["maxItems"], 2)
         self.assertEqual(
             reply_schema["$ref"],
             "#/$defs/GeneratedSuggestedReply",
@@ -151,27 +153,21 @@ class CallAssistAgentTests(unittest.TestCase):
         reply_definition = tool_schema["$defs"]["GeneratedSuggestedReply"]
         self.assertEqual(
             set(reply_definition["properties"]),
-            {"japanese_reply", "simplified_chinese_meaning"},
+            {"japanese", "chinese"},
         )
         self.assertIn(
-            "natural Japanese",
-            reply_definition["properties"]["japanese_reply"]["description"],
+            "自然日语",
+            reply_definition["properties"]["japanese"]["description"],
         )
         self.assertIn(
-            "Simplified Chinese",
-            reply_definition["properties"]["simplified_chinese_meaning"][
-                "description"
-            ],
+            "简体中文",
+            reply_definition["properties"]["chinese"]["description"],
         )
+        self.assertNotIn("confirm", tool_schema["properties"])
+        self.assertIn("confirmation_zh", tool_schema["required"])
         self.assertIn(
-            "confirmation_simplified_chinese",
-            tool_schema["required"],
-        )
-        self.assertIn(
-            "Simplified Chinese",
-            tool_schema["properties"]["confirmation_simplified_chinese"][
-                "description"
-            ],
+            "简体中文",
+            tool_schema["properties"]["confirmation_zh"]["description"],
         )
 
     def test_reasoning_provider_never_receives_credentials_from_voice_agent(
@@ -240,29 +236,33 @@ class CallAssistAgentTests(unittest.TestCase):
 
         self.assertEqual(result["translationZh"], "请在下周五前发送报价单。")
         self.assertTrue(result["confirmationRequired"])
-        self.assertEqual(prompts[0]["transcript"][0]["language"], "ja-JP")
         self.assertEqual(
-            prompts[0]["constraints"],
-            {
-                "confirmationRequired": True,
-                "replyPerspective": (
-                    "Give two or three distinct options from the listener's point of "
-                    "view. Include an option that accepts the request and an option "
-                    "that asks for a change or clarification when relevant."
-                ),
-                "replyMustNotCopySource": True,
-                "replyCount": "2 or 3",
-                "replyOptionsMustBeDistinctAndRelevant": True,
-                "preserveJapaneseTermsInReply": ["金曜日"],
-                "suggestedReplyShape": "承知しました。金曜日までにお送りします。",
-                "suggestedReplyChineseShape": "明白了，我会在周五前发送。",
-                "confirmationChineseMustInclude": ["星期五", "下周", "报价单"],
-                "confirmationGuidance": (
-                    "Ask the user to confirm the stated deadline and commitment. "
-                    "Do not ask what an already-stated date, weekday, or action means."
-                ),
-            },
+            prompts[0]["latest_ja"],
+            "来週の金曜日までに見積書を送ってください。",
         )
+        self.assertTrue(prompts[0]["confirm"])
+        self.assertEqual(
+            prompts[0]["facts"],
+            [
+                {"ja": "金曜日", "zh": "星期五"},
+                {"ja": "来週", "zh": "下周"},
+            ],
+        )
+        self.assertEqual(
+            prompts[0]["reply_strategy"],
+            "回应来电者；第二项提出相关追问或另一种选择",
+        )
+        self.assertEqual(
+            prompts[0]["output_language"],
+            "所有 *_zh 和 replies.chinese 字段只能使用简体中文",
+        )
+        self.assertEqual(
+            prompts[0]["translation_rule"],
+            "只翻译 latest_ja，不得添加未提到的信息或回答建议",
+        )
+        self.assertNotIn("answer_mode", prompts[0])
+        self.assertEqual(prompts[0]["utterance_type"], "statement")
+        self.assertNotIn("reply_templates", prompts[0])
         self.assertEqual(
             trace.stages[0][1],
             {
@@ -342,13 +342,13 @@ class CallAssistAgentTests(unittest.TestCase):
 
         self.assertEqual(result["translationZh"], "请在下周五之前发送报价单。")
         self.assertTrue(result["confirmationRequired"])
-        self.assertNotIn("validationFeedback", prompts[0])
+        self.assertNotIn("fix", prompts[0])
         self.assertIn(
             "The Assist Card must contain at least two response options.",
-            prompts[1]["validationFeedback"],
+            prompts[1]["fix"],
         )
         self.assertEqual(
-            prompts[1]["previousRejectedCard"]["translationZh"],
+            prompts[1]["rejected"]["translationZh"],
             "请在下周一之前发送报价单。",
         )
 
@@ -374,6 +374,221 @@ class CallAssistAgentTests(unittest.TestCase):
         card = sink.finish_agent_turn()
 
         self.assertEqual(validate_assist_card(card.source_text, card), [])
+
+    def test_yes_no_request_adds_generic_answer_mode(self) -> None:
+        prompts: list[dict[str, object]] = []
+
+        class FakeAgent:
+            def __call__(self, prompt: str) -> None:
+                prompts.append(json.loads(prompt))
+
+        analyze_transcript(
+            FakeAgent(),
+            [
+                {
+                    "text": (
+                        "登録内容に変更がないか、はい、いえで"
+                        "お答えいただけますか。"
+                    )
+                }
+            ],
+        )
+
+        self.assertEqual(prompts[0]["answer_mode"], "yes_no")
+        self.assertEqual(
+            prompts[0]["reply_strategy"],
+            "一项肯定回答；一项否定或要求澄清的回答；都使用接听者口吻",
+        )
+        self.assertEqual(
+            prompts[0]["reply_constraints"],
+            [
+                "一个回答以「はい」开头",
+                "另一个回答以「いいえ」开头，或明确请求对方重述需要确认的内容",
+                "不能把对方的是非问题原样反问回去",
+            ],
+        )
+
+    def test_yes_no_request_rejects_two_rephrased_questions(self) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text="変更がないか、はい、いえでお答えいただけますか。",
+            translation_zh="是否没有变更，请回答是或否。",
+            suggested_replies=[
+                {"japanese": "変更がないですね？", "chinese": "没有变更，是吗？"},
+                {"japanese": "変更があるんですか？", "chinese": "有变更吗？"},
+            ],
+            confirmation_required=True,
+            confirmation_zh="请确认是否有变更。",
+        )
+        card = sink.finish_agent_turn()
+
+        errors = validate_assist_card(card.source_text, card)
+
+        self.assertTrue(any("yes/no request" in error for error in errors))
+
+    def test_information_request_adds_listener_role_contract(self) -> None:
+        prompts: list[dict[str, object]] = []
+
+        class FakeAgent:
+            def __call__(self, prompt: str) -> None:
+                prompts.append(json.loads(prompt))
+
+        analyze_transcript(
+            FakeAgent(),
+            [{"text": "ご予約のお名前と日々を教えてもらいますか"}],
+        )
+
+        self.assertEqual(
+            prompts[0]["speech_act"],
+            "caller_requests_information_from_listener",
+        )
+        self.assertEqual(prompts[0]["output_mode"], "translation_only")
+        self.assertEqual(
+            prompts[0]["role_contract"],
+            "来电者正在请接听者提供信息；回答必须由接听者说给来电者",
+        )
+        self.assertTrue(
+            any(
+                "禁止编造姓名、日期、金额、号码或示例值" in constraint
+                for constraint in prompts[0]["information_reply_constraints"]
+            )
+        )
+
+    def test_information_request_tool_keeps_unknown_values_in_application_code(
+        self,
+    ) -> None:
+        class CapturingProvider:
+            model = "test-local-model"
+
+            def __init__(self) -> None:
+                self.request: dict[str, object] | None = None
+
+            def complete(
+                self,
+                request: dict[str, object],
+                *,
+                session_id: str,
+            ) -> dict[str, object]:
+                del session_id
+                if any(
+                    message.get("role") == "tool"
+                    for message in request.get("messages", [])
+                ):
+                    return {
+                        "choices": [
+                            {
+                                "message": {"content": ""},
+                                "finish_reason": "stop",
+                            }
+                        ]
+                    }
+                self.request = request
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_information_request",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "card",
+                                            "arguments": (
+                                                '{"translation_zh":'
+                                                '"对方请您提供预约姓名和日期。"}'
+                                            ),
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                }
+
+        provider = CapturingProvider()
+        sink = CallAssistResultSink()
+        request = SimpleNamespace(
+            session_id="information-tool-contract",
+            instructions=None,
+        )
+        source_text = "ご予約のお名前と日々を教えてもらいますか"
+        agent = create_strands_agent(
+            object(),
+            request,
+            sink,
+            source_text,
+            ReasoningConfig.local(provider),
+        )
+
+        sink.begin_agent_turn()
+        with redirect_stdout(StringIO()):
+            agent("翻译信息请求。")
+        card = sink.finish_agent_turn()
+
+        assert provider.request is not None
+        tool_schema = provider.request["tools"][0]["function"]["parameters"]
+        self.assertEqual(tool_schema["required"], ["translation_zh"])
+        self.assertEqual(
+            [reply.japanese for reply in card.suggested_replies],
+            [
+                "はい、確認してお伝えします。",
+                "申し訳ありません。確認しますので、少々お待ちください。",
+            ],
+        )
+        self.assertEqual(validate_assist_card(source_text, card), [])
+
+    def test_information_request_rejects_role_reversed_translation(self) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text="ご予約のお名前と日々を教えてもらいますか",
+            translation_zh="需要对方提供预约的姓名和日期。",
+            suggested_replies=[
+                {
+                    "japanese": "了解しました、名前と日付を記します。",
+                    "chinese": "好的，我会记录下来。",
+                },
+                {
+                    "japanese": "申し訳ありません、もう一度お願いします。",
+                    "chinese": "不好意思，请再说一遍。",
+                },
+            ],
+            confirmation_required=True,
+            confirmation_zh="请确认对方是否准备好了预约信息。",
+        )
+        card = sink.finish_agent_turn()
+
+        errors = validate_assist_card(card.source_text, card)
+
+        self.assertTrue(any("caller asks the listener" in error for error in errors))
+
+    def test_information_request_rejects_invented_values(self) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text="ご予約のお名前と日々を教えてもらいますか",
+            translation_zh="请告诉对方预约姓名和日期。",
+            suggested_replies=[
+                {
+                    "japanese": "お名前は張三で、日付は2023年10月1日です。",
+                    "chinese": "姓名是张三，日期是2023年10月1日。",
+                },
+                {
+                    "japanese": "確認しますので、少々お待ちください。",
+                    "chinese": "我确认一下，请稍等。",
+                },
+            ],
+            confirmation_required=True,
+            confirmation_zh="请确认自己要提供的预约姓名和日期。",
+        )
+        card = sink.finish_agent_turn()
+
+        errors = validate_assist_card(card.source_text, card)
+
+        self.assertTrue(any("must not invent" in error for error in errors))
 
     def test_semantic_validation_accepts_delivery_reply_options(self) -> None:
         sink = CallAssistResultSink()
@@ -402,7 +617,7 @@ class CallAssistAgentTests(unittest.TestCase):
 
         self.assertEqual(validate_assist_card(card.source_text, card), [])
 
-    def test_semantic_validation_rejects_reversed_delivery_perspective(self) -> None:
+    def test_semantic_validation_rejects_bad_japanese(self) -> None:
         sink = CallAssistResultSink()
         sink.begin_agent_turn()
         sink.publish_from_tool(
@@ -425,9 +640,128 @@ class CallAssistAgentTests(unittest.TestCase):
 
         errors = validate_assist_card(card.source_text, card)
 
-        self.assertTrue(any("user will deliver" in error for error in errors))
         self.assertTrue(any("申し訳ありません" in error for error in errors))
-        self.assertTrue(any("number 2" in error for error in errors))
+
+    def test_semantic_validation_accepts_a_summary_for_a_long_noisy_utterance(
+        self,
+    ) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text=(
+                "失礼いたしました。では、予定だけお伝えします。"
+                "ご登録の50所とお車ライフ方法に変更がないかの確認だけ、"
+                "はい、いえでお答えいただけますか。"
+            ),
+            translation_zh=(
+                "不好意思，只向您说明安排。对方想确认登记信息是否有变更，"
+                "请回答是或否。"
+            ),
+            suggested_replies=[
+                {
+                    "japanese": "はい、変更はありません。",
+                    "chinese": "是的，没有变更。",
+                },
+                {
+                    "japanese": "すみません、確認内容をもう一度お願いします。",
+                    "chinese": "不好意思，请再说一遍要确认的内容。",
+                },
+            ],
+            confirmation_required=True,
+            confirmation_zh="请在回答前确认登记信息是否有变更。",
+        )
+        card = sink.finish_agent_turn()
+
+        self.assertEqual(validate_assist_card(card.source_text, card), [])
+
+    def test_plain_question_does_not_require_commitment_confirmation(self) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text="今、お時間よろしいでしょうか？",
+            translation_zh="请问现在方便吗？",
+            suggested_replies=[
+                {"japanese": "はい、大丈夫です。", "chinese": "可以，没问题。"},
+                {
+                    "japanese": "申し訳ありません。後でもよろしいですか。",
+                    "chinese": "不好意思，稍后可以吗？",
+                },
+            ],
+            confirmation_required=False,
+            confirmation_zh="",
+        )
+        card = sink.finish_agent_turn()
+
+        self.assertEqual(validate_assist_card(card.source_text, card), [])
+
+    def test_semantic_validation_accepts_an_imperative_translation_of_a_request(
+        self,
+    ) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text="はい、いえでお答えいただけますか。",
+            translation_zh="请回答是或否。",
+            suggested_replies=[
+                {"japanese": "はい、変更はありません。", "chinese": "是的，没有变更。"},
+                {
+                    "japanese": "すみません、もう一度お願いします。",
+                    "chinese": "不好意思，请再说一遍。",
+                },
+            ],
+            confirmation_required=False,
+            confirmation_zh="",
+        )
+        card = sink.finish_agent_turn()
+
+        self.assertEqual(validate_assist_card(card.source_text, card), [])
+
+    def test_semantic_validation_rejects_multiple_values_in_translation(self) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text="現在の時間では難しいです。",
+            translation_zh="现在这个时间不方便。 / 我稍后再打。",
+            suggested_replies=[
+                {"japanese": "分かりました。", "chinese": "明白了。"},
+                {
+                    "japanese": "いつがよろしいですか。",
+                    "chinese": "什么时候方便？",
+                },
+            ],
+            confirmation_required=False,
+            confirmation_zh="",
+        )
+        card = sink.finish_agent_turn()
+
+        errors = validate_assist_card(card.source_text, card)
+
+        self.assertTrue(any("one translation" in error for error in errors))
+
+    def test_semantic_validation_accepts_a_contextual_time_reply(
+        self,
+    ) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text="明日の午後2時に荷物をお届けしてもよろしいでしょうか。",
+            translation_zh="明天下午两点给您送货，可以吗？",
+            suggested_replies=[
+                {
+                    "japanese": "はい、その時間で大丈夫です。",
+                    "chinese": "好的，那个时间可以。",
+                },
+                {
+                    "japanese": "申し訳ありません。別の時間に変更できますか。",
+                    "chinese": "不好意思，可以改到其他时间吗？",
+                },
+            ],
+            confirmation_required=True,
+            confirmation_zh="请确认明天下午两点是否方便收货。",
+        )
+        card = sink.finish_agent_turn()
+
+        self.assertEqual(validate_assist_card(card.source_text, card), [])
 
     def test_semantic_validation_rejects_wrong_week_and_non_japanese_replies(
         self,
@@ -449,7 +783,6 @@ class CallAssistAgentTests(unittest.TestCase):
         errors = validate_assist_card(card.source_text, card)
 
         self.assertTrue(any("来週" in error for error in errors))
-        self.assertTrue(any("見積書" in error for error in errors))
         self.assertTrue(any("unique" in error for error in errors))
         self.assertTrue(any("hiragana or katakana" in error for error in errors))
 
@@ -499,7 +832,7 @@ class CallAssistAgentTests(unittest.TestCase):
 
         self.assertTrue(any("confirmation" in error for error in errors))
 
-    def test_semantic_validation_rejects_a_near_copy_of_a_long_request(
+    def test_semantic_validation_rejects_an_exact_copy_of_a_long_request(
         self,
     ) -> None:
         sink = CallAssistResultSink()
@@ -509,8 +842,8 @@ class CallAssistAgentTests(unittest.TestCase):
             translation_zh="请在下周五之前发送报价单。",
             suggested_replies=[
                 {
-                    "japanese": "金曜日までに見積書を送ってください。",
-                    "chinese": "请在周五前发送报价单。",
+                    "japanese": "来週の金曜日までに見積書を送ってください。",
+                    "chinese": "请在下周五前发送报价单。",
                 }
             ],
             confirmation_required=True,
@@ -520,9 +853,36 @@ class CallAssistAgentTests(unittest.TestCase):
 
         errors = validate_assist_card(card.source_text, card)
 
-        self.assertTrue(any("too similar" in error for error in errors))
+        self.assertTrue(any("must not repeat" in error for error in errors))
 
-    def test_semantic_validation_preserves_japanese_weekday_in_reply(self) -> None:
+    def test_semantic_validation_does_not_block_a_nonidentical_short_reply(
+        self,
+    ) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text="現在の時間では難しいです。",
+            translation_zh="现在这个时间不方便。",
+            suggested_replies=[
+                {
+                    "japanese": "現在の時間は難しいです、すみません。",
+                    "chinese": "现在这个时间确实不方便。",
+                },
+                {
+                    "japanese": "いつがよろしいですか。",
+                    "chinese": "什么时候方便？",
+                },
+            ],
+            confirmation_required=False,
+            confirmation_zh="",
+        )
+        card = sink.finish_agent_turn()
+
+        self.assertEqual(validate_assist_card(card.source_text, card), [])
+
+    def test_semantic_validation_rejects_chinese_weekday_in_japanese_reply(
+        self,
+    ) -> None:
         sink = CallAssistResultSink()
         sink.begin_agent_turn()
         sink.publish_from_tool(
@@ -541,7 +901,7 @@ class CallAssistAgentTests(unittest.TestCase):
 
         errors = validate_assist_card(card.source_text, card)
 
-        self.assertTrue(any("金曜日" in error for error in errors))
+        self.assertTrue(any("Chinese weekday" in error for error in errors))
 
     def test_semantic_validation_rejects_observed_ungrammatical_reply(self) -> None:
         sink = CallAssistResultSink()
@@ -564,7 +924,7 @@ class CallAssistAgentTests(unittest.TestCase):
 
         self.assertTrue(any("対応します" in error for error in errors))
 
-    def test_semantic_validation_rejects_conflicting_week_and_vague_confirmation(
+    def test_semantic_validation_rejects_conflicting_week_in_reply_meaning(
         self,
     ) -> None:
         sink = CallAssistResultSink()
@@ -586,8 +946,6 @@ class CallAssistAgentTests(unittest.TestCase):
         errors = validate_assist_card(card.source_text, card)
 
         self.assertTrue(any("本周" in error for error in errors))
-        self.assertTrue(any("金曜日" in error for error in errors))
-        self.assertTrue(any("見積書" in error for error in errors))
 
     def test_accepts_a_standard_chat_endpoint_message(self) -> None:
         assistant = JapaneseReplyAgent(
@@ -636,6 +994,71 @@ class CallAssistAgentTests(unittest.TestCase):
 
         self.assertEqual(result["sourceText"], "確認をお願いします。")
         self.assertEqual(result["translationZh"], "请确认。")
+
+    def test_returns_a_safe_card_when_retries_remain_unusable(self) -> None:
+        attempts = 0
+
+        def fake_create(
+            _app: object,
+            _request: object,
+            result_sink: object,
+            source_text: str,
+            _reasoning: object,
+        ) -> object:
+            nonlocal attempts
+            attempts += 1
+
+            class FakeStrandsAgent:
+                def __call__(self, _prompt: str) -> None:
+                    result_sink.publish_from_tool(
+                        source_text=source_text,
+                        translation_zh=source_text,
+                        suggested_replies=[
+                            {
+                                "japanese": "はい、変更はありません。",
+                                "chinese": "是的，没有变更。",
+                            },
+                            {
+                                "japanese": "いいえ、変更があります。",
+                                "chinese": "不，有变更。",
+                            },
+                        ],
+                        confirmation_required=True,
+                        confirmation_zh="请确认登记信息是否有变更。",
+                    )
+
+            return FakeStrandsAgent()
+
+        source_text = (
+            "失礼いたしました。では、予定だけお伝えします。"
+            "ご登録の50所とお車ライフ方法に変更がないかの確認だけ、"
+            "はい、いえでお答えいただけますか。"
+        )
+        assistant = JapaneseReplyAgent(
+            ReasoningConfig.vifu_profile("call-assist-reasoning")
+        )
+        assistant.vifu_bind(object())
+        request = SimpleNamespace(
+            input={"transcript": source_text},
+            trace=FakeTrace(),
+            session_id="long-noisy-turn",
+            instructions=None,
+        )
+
+        with patch(
+            "japanese_reply_agent.create_strands_agent",
+            side_effect=fake_create,
+        ):
+            result = assistant(request)
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(
+            result["translationZh"],
+            "这段话有部分内容没有听清，请先让对方重述关键信息。",
+        )
+        self.assertEqual(len(result["suggestedReplies"]), 2)
+        self.assertTrue(result["confirmationRequired"])
+        self.assertIn("请勿直接确认", result["confirmationZh"])
 
     def test_unconfigured_reasoning_provider_fails_before_running(self) -> None:
         assistant = JapaneseReplyAgent(ReasoningConfig.unconfigured())
