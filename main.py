@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -7,19 +8,26 @@ from typing import Any
 from japanese_reply_agent import JapaneseReplyAgent
 from reasoning_config import ReasoningConfig, ReasoningConfigurationError
 from speaker_identification import DEFAULT_SPEAKER_MODEL, LocalSpeakerIdentifier
-from vifu import LocalLlama, LocalWhisper, Vifu
+from vifu import LocalWhisper, OpenAICompatible, Vifu
 from voice_agent import JapaneseCallListenerAgent, VoiceConfigurationError
 
 ASSIST_CARD_TOPIC = "japanese-phone-call.assist-card.v1"
 LOCAL_WHISPER_MODEL = "ggml-small.bin"
-LOCAL_REASONING_MODEL = "qwen2.5-3b-instruct-q4_k_m.gguf"
-LOCAL_REASONING_GPU_LAYERS = (
-    36
-    if sys.platform == "darwin"
-    and getattr(LocalLlama, "supports_safe_accelerator_shutdown", False)
-    else 0
+OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL"
+OPENAI_MODEL_ENV = "OPENAI_MODEL"
+OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
+OPENAI_BASE_URL = os.environ.get(
+    OPENAI_BASE_URL_ENV,
+    DEFAULT_OPENAI_BASE_URL,
+).strip().rstrip("/") or DEFAULT_OPENAI_BASE_URL
+OPENAI_MODEL = (
+    os.environ.get(OPENAI_MODEL_ENV, DEFAULT_OPENAI_MODEL).strip()
+    or DEFAULT_OPENAI_MODEL
 )
-LOCAL_REASONING_TIMEOUT_SECONDS = 30.0
+OPENAI_CHAT_COMPLETIONS_URL = f"{OPENAI_BASE_URL}/chat/completions"
+OPENAI_COMPATIBLE_TIMEOUT_SECONDS = 30.0
 DEMO_TRANSCRIPT = "今、お時間よろしいでしょうか。"
 
 
@@ -64,6 +72,12 @@ def print_speaker_status(event: dict[str, Any]) -> None:
         print("例如：これは私の声です。AlphaMindを開始します。")
 
 
+def print_analysis_error(_event: dict[str, Any], _error: Exception) -> None:
+    print()
+    print("暂时无法完成分析，请再说一次。")
+    print()
+
+
 app = Vifu(
     "AlphaMind",
     workspace=Path(__file__).resolve().parent,
@@ -79,15 +93,14 @@ transcription_provider = app.provider(
     name="Japanese Local Whisper",
 )
 reasoning_provider = app.provider(
-    "local-qwen",
-    LocalLlama(
-        model=LOCAL_REASONING_MODEL,
-        context_size=8_192,
-        default_max_tokens=1_200,
-        gpu_layers=LOCAL_REASONING_GPU_LAYERS,
-        timeout=LOCAL_REASONING_TIMEOUT_SECONDS,
+    "openai-compatible",
+    OpenAICompatible(
+        url=OPENAI_CHAT_COMPLETIONS_URL,
+        model=OPENAI_MODEL,
+        api_key=os.environ.get(OPENAI_API_KEY_ENV),
+        timeout=OPENAI_COMPATIBLE_TIMEOUT_SECONDS,
     ),
-    name="Japanese Local Qwen",
+    name="OpenAI-compatible Reasoning",
 )
 
 voice_agent = JapaneseCallListenerAgent(
@@ -96,11 +109,12 @@ voice_agent = JapaneseCallListenerAgent(
     result_topic=ASSIST_CARD_TOPIC,
     on_result=print_assist_card,
     on_transcript=print_transcript_status,
+    on_error=print_analysis_error,
     on_speaker_status=print_speaker_status,
     speaker_identifier=LocalSpeakerIdentifier(model=DEFAULT_SPEAKER_MODEL),
     transcriber=transcription_provider,
 )
-reply_agent = JapaneseReplyAgent(ReasoningConfig.local(reasoning_provider))
+reply_agent = JapaneseReplyAgent(ReasoningConfig.app_provider(reasoning_provider))
 
 app.agent(
     "japanese-call-listener",
@@ -145,6 +159,15 @@ def main(argv: list[str] | None = None) -> None:
     voice_agent.debug = debug
     reply_agent.debug = debug
     try:
+        if (
+            OPENAI_BASE_URL == DEFAULT_OPENAI_BASE_URL
+            and not os.environ.get(OPENAI_API_KEY_ENV, "").strip()
+        ):
+            raise ReasoningConfigurationError(
+                f"{OPENAI_API_KEY_ENV} is required for the default OpenAI Provider; "
+                f"set {OPENAI_BASE_URL_ENV} and {OPENAI_MODEL_ENV} to use another "
+                "OpenAI-compatible Provider"
+            )
         if arguments == ["demo"]:
             run_demo()
             return

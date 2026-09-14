@@ -11,7 +11,7 @@ from models import CallAssistInput
 from native_output import native_stderr
 from reasoning_config import ReasoningConfig
 from result_sink import CallAssistResultSink
-from vifu import AgentRequest
+from vifu import AgentRequest, LocalProviderError
 
 logger = logging.getLogger("alphamind-reasoning")
 
@@ -72,6 +72,19 @@ _TRANSLATION_SEPARATOR = re.compile(r"\s[/／]\s")
 _INFORMATION_REQUEST = re.compile(
     r"(?:教えて(?:いただけ|もらえ|もらい|ください)|お聞かせください)"
 )
+_COACHING_REQUEST = re.compile(
+    r"(?:"
+    r"言ってみ(?:て|ましょう)|言ってください|"
+    r"話してみて|答えて(?:ください|みて)?|"
+    r"練習しましょう|から始め(?:よう|ましょう|ますか)|"
+    r"(?:一言|ひと言)足してみ(?:よう|て)|"
+    r"って(?:いう)?感じで|繰り返して|復唱して"
+    r")"
+)
+_REVERSED_LISTENER_INFORMATION_REQUEST = re.compile(
+    r"(?:お?名前|氏名|住所|出身(?:地)?|電話番号|生年月日)"
+    r".{0,30}(?:教えて|お聞かせ)"
+)
 
 
 class GeneratedSuggestedReply(BaseModel):
@@ -104,6 +117,10 @@ SYSTEM_PROMPT = """
 翻译、确认提示和建议回答都必须保持这个方向，不能反过来让来电者提供 X。
 如果输入没有给出 X 的真实值，绝不能替用户填写示例姓名、日期、金额或号码；
 建议用户表示会提供真实信息，或者请对方稍候以便核对。
+`previous_ja` 是同一位来电者刚才说过的连续上下文。对方让接听者练习、
+复述、补充自己的姓名、住址、出身等信息，或给出 `○○` 这样的填空模板时，
+建议必须是接听者自然地答应、照着说，或请对方说明说法；不能反问来电者
+接听者自己的信息。`って感じで` 等片段必须结合前文理解。
 
 严格调用一次 `card`。`translation_zh` 是一条简洁的中文解释。`replies` 必须
 包含两个简短、礼貌且含义不同的日语回答，并附各自的简体中文含义：第一个
@@ -234,7 +251,7 @@ def create_strands_agent(
             temperature=0.0,
             max_tokens=MAX_REASONING_TOKENS,
         )
-    elif reasoning.provider_type == "vifu-local":
+    elif reasoning.provider_type in {"app-provider", "vifu-local"}:
         model = local_provider_model(
             request,
             provider=reasoning.provider,
@@ -279,23 +296,35 @@ def analyze_transcript(
     question = _is_question(source_text)
     yes_no = _requests_yes_no_answer(source_text)
     information_request = _caller_requests_listener_information(source_text)
+    previous = [
+        str(item.get("text") or "")
+        for item in transcript_context[-5:-1]
+        if item.get("text")
+    ]
+    coaching_request = _caller_coaches_listener(source_text, previous)
+    if coaching_request:
+        reply_strategy = (
+            "接听者自然地答应或按对方的指导作答；第二项请求重述或说明说法"
+        )
+    elif yes_no:
+        reply_strategy = (
+            "一项肯定回答；一项否定或要求澄清的回答；都使用接听者口吻"
+        )
+    elif information_request:
+        reply_strategy = (
+            "接听者表示会提供或先确认所需信息；第二项请求澄清或稍候"
+        )
+    elif question:
+        reply_strategy = (
+            "直接回答；第二项给出不同的拒绝、另一种选择或询问缺失信息"
+        )
+    else:
+        reply_strategy = "回应来电者；第二项提出相关追问或另一种选择"
     prompt = {
         "latest_ja": source_text,
         "confirm": confirmation_required,
         "utterance_type": "question" if question else "statement",
-        "reply_strategy": (
-            "一项肯定回答；一项否定或要求澄清的回答；都使用接听者口吻"
-            if yes_no
-            else (
-                "接听者表示会提供或先确认所需信息；第二项请求澄清或稍候"
-                if information_request
-                else (
-                "直接回答；第二项给出不同的拒绝、另一种选择或询问缺失信息"
-                if question
-                else "回应来电者；第二项提出相关追问或另一种选择"
-                )
-            )
-        ),
+        "reply_strategy": reply_strategy,
         "output_language": "所有 *_zh 和 replies.chinese 字段只能使用简体中文",
         "translation_rule": "只翻译 latest_ja，不得添加未提到的信息或回答建议",
     }
@@ -319,11 +348,18 @@ def analyze_transcript(
             "使用「お伝えします」「確認します」或「少々お待ちください」",
             "确认提示应提醒接听者核对自己将要提供的信息",
         ]
-    previous = [
-        str(item.get("text") or "")
-        for item in transcript_context[-3:-1]
-        if item.get("text")
-    ]
+    if coaching_request:
+        prompt["speech_act"] = "caller_coaches_listener_response"
+        prompt["role_contract"] = (
+            "来电者正在指导接听者说出接听者自己的信息或练习回答；"
+            "建议必须是接听者说给来电者的话"
+        )
+        prompt["coaching_reply_constraints"] = [
+            "第一个回答自然地答应、复述模板或按要求作答",
+            "未知的姓名、地址、出身等值保留为○○，不能编造",
+            "第二个回答可以请对方重述或说明说法",
+            "不能反问来电者提供接听者自己的信息",
+        ]
     if previous:
         prompt["previous_ja"] = previous
     must_preserve = [
@@ -357,6 +393,7 @@ def validate_assist_card(source_text: str, card: Any) -> list[str]:
     if _TRANSLATION_SEPARATOR.search(translation):
         errors.append("The Chinese translation must contain one translation only.")
     information_request = _caller_requests_listener_information(source_text)
+    coaching_request = _caller_coaches_listener(source_text)
     if information_request and any(
         phrase in translation
         for phrase in (
@@ -426,6 +463,14 @@ def validate_assist_card(source_text: str, card: Any) -> list[str]:
                 "The suggested replies must not invent requested values such as "
                 "dates or numbers: " + ", ".join(sorted(invented_numbers))
             )
+    if coaching_request and any(
+        _REVERSED_LISTENER_INFORMATION_REQUEST.search(reply.japanese)
+        for reply in card.suggested_replies
+    ):
+        errors.append(
+            "A caller coaching the listener must not produce a reply that asks "
+            "the caller for the listener's personal information."
+        )
     if _requests_yes_no_answer(source_text):
         has_yes = any(
             re.match(r"^はい(?:[\s、。,.！!]|$)", reply.japanese)
@@ -550,6 +595,19 @@ def _caller_requests_listener_information(source_text: str) -> bool:
     return bool(_INFORMATION_REQUEST.search(source_text))
 
 
+def _caller_coaches_listener(
+    source_text: str,
+    previous: list[str] | None = None,
+) -> bool:
+    if _COACHING_REQUEST.search(source_text):
+        return True
+    return bool(
+        previous
+        and re.search(r"(?:って|という)感じ(?:で|です)", source_text)
+        and any(_COACHING_REQUEST.search(item) for item in previous)
+    )
+
+
 def _is_chinese_text(value: str) -> bool:
     return bool(_CJK_CHARACTER.search(value)) and not _JAPANESE_KANA.search(value)
 
@@ -637,6 +695,16 @@ class JapaneseReplyAgent:
                 card = result_sink.finish_agent_turn()
             except Exception as error:
                 result_sink.abort_agent_turn()
+                if (
+                    attempt < MAX_REASONING_ATTEMPTS
+                    and _is_retryable_provider_error(error)
+                ):
+                    logger.debug(
+                        "Japanese reply Provider request failed on attempt %s; "
+                        "retrying the same Provider",
+                        attempt,
+                    )
+                    continue
                 logger.error(
                     "Japanese reply reasoning failed (%s): %s",
                     type(error).__name__,
@@ -665,6 +733,19 @@ class JapaneseReplyAgent:
                 confirmation_required=_requires_confirmation(source_text),
             )
         return card.model_dump(by_alias=True, exclude_none=True)
+
+
+def _is_retryable_provider_error(error: Exception) -> bool:
+    if not isinstance(error, LocalProviderError):
+        return False
+    message = str(error)
+    if "request failed" in message:
+        return True
+    match = re.search(r"returned HTTP ([0-9]{3})", message)
+    if match is None:
+        return False
+    status = int(match.group(1))
+    return status == 408 or status == 429 or 500 <= status <= 599
 
 
 def _uncertain_assist_card(

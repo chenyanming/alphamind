@@ -71,7 +71,8 @@ Narration:
 
 ## Recording checklist
 
-- Use the 3B local model and multilingual Whisper model.
+- Configure one OpenAI-compatible reasoning model and the multilingual Whisper
+  model before recording.
 - Capture one complete successful run before recording the final take.
 - Show the working product, not only code or slides.
 - Include the problem, audience, and why it matters.

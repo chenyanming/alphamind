@@ -190,6 +190,11 @@ class LocalSpeakerIdentifier:
         ):
             self._callers.append(_VoiceProfile(embedding))
             return f"caller-{len(self._callers)}"
+        if caller_index >= 0:
+            if self_score >= caller_score + self.ambiguity_margin:
+                return "self"
+            if caller_score >= self_score + self.ambiguity_margin:
+                return f"caller-{caller_index + 1}"
         return "unknown"
 
 

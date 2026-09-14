@@ -9,7 +9,8 @@ import logging
 import re
 import sys
 import unicodedata
-from collections.abc import Awaitable
+from collections import Counter, deque
+from collections.abc import Awaitable, Iterable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from threading import Lock
@@ -44,6 +45,9 @@ from speaker_identification import SpeakerIdentificationError
 logger = logging.getLogger("alphamind-voice")
 
 DUPLICATE_TRANSCRIPT_WINDOW_SECONDS = 3.0
+CALLER_CONTEXT_TURNS = 6
+LIVEKIT_MIN_ENDPOINTING_DELAY_SECONDS = 1.5
+LIVEKIT_MAX_ENDPOINTING_DELAY_SECONDS = 3.0
 _MARKER_BOUNDARIES = re.compile(r"[\[\](){}<>【】「」『』♪♫.,!?。！？…·・]+")
 _DUPLICATE_SEPARATORS = re.compile(r"[\s.,!?。！？…]+")
 _NON_SPEECH_LABELS = frozenset(
@@ -216,6 +220,28 @@ class _BackgroundTasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 
 
+class _CommittedTurnAgent(Agent):
+    """Forward only LiveKit-completed user turns to the application."""
+
+    def __init__(self, on_turn: Any) -> None:
+        super().__init__(
+            instructions="Transcribe Japanese speech into complete user turns.",
+        )
+        self._on_turn = on_turn
+
+    async def on_user_turn_completed(
+        self,
+        _turn_context: Any,
+        new_message: Any,
+    ) -> None:
+        text = str(new_message.text_content or "").strip()
+        if not text:
+            return
+        result = self._on_turn(text)
+        if inspect.isawaitable(result):
+            await result
+
+
 class JapaneseCallListenerAgent:
     """Own local audio transcription and hand final turns to a specialist."""
 
@@ -238,6 +264,7 @@ class JapaneseCallListenerAgent:
         result_topic: str | None = None,
         on_result: Any | None = None,
         on_transcript: Any | None = None,
+        on_error: Any | None = None,
         on_speaker_status: Any | None = None,
         speaker_identifier: Any | None = None,
         debug: bool = False,
@@ -248,6 +275,7 @@ class JapaneseCallListenerAgent:
         self.result_topic = _optional_name(result_topic, "result_topic")
         self.on_result = on_result
         self.on_transcript = on_transcript
+        self.on_error = on_error
         self.on_speaker_status = on_speaker_status
         self.speaker_identifier = speaker_identifier
         self.debug = debug
@@ -276,14 +304,15 @@ class JapaneseCallListenerAgent:
         self._app: Any | None = None
         self._endpoint: str | None = None
         self._stt: BufferedLocalTranscriberSTT | None = None
-        self._latest_sequences: dict[str, int] = {}
         self._pending_transcripts: dict[
             str,
-            tuple[JobContext, dict[str, Any]],
+            deque[tuple[JobContext, dict[str, Any]]],
         ] = {}
         self._turn_workers: dict[str, asyncio.Task[Any]] = {}
         self._recent_transcripts: dict[tuple[str, str], tuple[str, float]] = {}
         self._recent_transcripts_lock = Lock()
+        self._caller_context: dict[str, deque[dict[str, Any]]] = {}
+        self._caller_context_lock = Lock()
         self._server = AgentServer(
             job_executor_type=JobExecutorType.THREAD,
             setup_fnc=self._prewarm,
@@ -348,11 +377,12 @@ class JapaneseCallListenerAgent:
         self._stt = None
         self._app = None
         self._endpoint = None
-        self._latest_sequences.clear()
         self._pending_transcripts.clear()
         self._turn_workers.clear()
         with self._recent_transcripts_lock:
             self._recent_transcripts.clear()
+        with self._caller_context_lock:
+            self._caller_context.clear()
 
     def __call__(self, request: Any) -> dict[str, Any]:
         event = _voice_transcript(request.input, language=self.language)
@@ -397,11 +427,18 @@ class JapaneseCallListenerAgent:
             }
             if event.get("speakerId"):
                 utterance["speakerId"] = event["speakerId"]
+            with self._caller_context_lock:
+                context = self._caller_context.setdefault(
+                    event["voiceSessionId"],
+                    deque(maxlen=CALLER_CONTEXT_TURNS),
+                )
+                context.append(utterance)
+                transcript_context = [dict(item) for item in context]
             output["handoffInput"] = {
                 "source": "livekit",
                 "language": event["language"],
                 "transcriptionProvider": self._provider_name(),
-                "transcript": [utterance],
+                "transcript": transcript_context,
             }
             return output
 
@@ -449,27 +486,47 @@ class JapaneseCallListenerAgent:
         session = AgentSession(
             stt=self._stt,
             vad=vad,
-            turn_handling={"turn_detection": "vad"},
+            turn_handling={
+                "turn_detection": "vad",
+                "endpointing": {
+                    "min_delay": LIVEKIT_MIN_ENDPOINTING_DELAY_SECONDS,
+                    "max_delay": LIVEKIT_MAX_ENDPOINTING_DELAY_SECONDS,
+                },
+            },
         )
         background_tasks = _BackgroundTasks(ctx)
         sequence = 0
+        final_fragments: list[tuple[str | None, str | None]] = []
 
         @session.on("user_input_transcribed")
         def on_user_transcript(event: UserInputTranscribedEvent) -> None:
-            nonlocal sequence
             text = event.transcript.strip()
             if not event.is_final or not text:
                 return
+            final_fragments.append(
+                (
+                    event.speaker_id,
+                    str(event.language) if event.language else None,
+                )
+            )
+
+        def on_committed_turn(text: str) -> None:
+            nonlocal sequence
             sequence += 1
+            fragments = tuple(final_fragments)
+            final_fragments.clear()
+            speaker_id = _committed_speaker_id(fragments)
+            speaker_role = _committed_speaker_role(fragments)
             transcript = {
                 "schema": "japanese-phone-call.transcript.v1",
                 "type": "transcript",
                 "voiceSessionId": ctx.room.name,
                 "participantIdentity": participant.identity,
-                "speakerId": event.speaker_id,
-                "speakerRole": _speaker_role(event.speaker_id),
-                "speakerEnrollment": event.speaker_id == "self-enrollment",
-                "language": str(event.language or self.language),
+                "speakerId": speaker_id,
+                "speakerRole": speaker_role,
+                "speakerEnrollment": speaker_role == "self"
+                and any(value == "self-enrollment" for value, _ in fragments),
+                "language": _committed_language(fragments, self.language),
                 "text": text,
                 "isFinal": True,
                 "sequence": sequence,
@@ -478,9 +535,7 @@ class JapaneseCallListenerAgent:
             self._enqueue_final_transcript(ctx, transcript, background_tasks)
 
         await session.start(
-            Agent(
-                instructions="Transcribe Japanese speech into final text turns.",
-            ),
+            _CommittedTurnAgent(on_committed_turn),
             room=ctx.room,
             room_options=room_io.RoomOptions(
                 text_output=True,
@@ -505,8 +560,7 @@ class JapaneseCallListenerAgent:
         background_tasks: _BackgroundTasks,
     ) -> None:
         session_id = _session_id(event)
-        self._latest_sequences[session_id] = _sequence(event)
-        self._pending_transcripts[session_id] = (ctx, event)
+        self._pending_transcripts.setdefault(session_id, deque()).append((ctx, event))
         worker = self._turn_workers.get(session_id)
         if worker is not None and not worker.done():
             return
@@ -517,12 +571,13 @@ class JapaneseCallListenerAgent:
             self._turn_workers[session_id] = worker
 
     async def _drain_final_transcripts(self, session_id: str) -> None:
-        """Process one active turn and retain only the newest waiting turn."""
+        """Process every completed turn in capture order without silent loss."""
         try:
-            while pending := self._pending_transcripts.pop(session_id, None):
-                ctx, event = pending
+            while queue := self._pending_transcripts.get(session_id):
+                ctx, event = queue.popleft()
                 await self._handle_final_transcript(ctx, event)
         finally:
+            self._pending_transcripts.pop(session_id, None)
             self._turn_workers.pop(session_id, None)
 
     async def _handle_final_transcript(
@@ -531,18 +586,13 @@ class JapaneseCallListenerAgent:
         event: dict[str, Any],
     ) -> None:
         session_id = _session_id(event)
-        sequence = _sequence(event)
-        self._latest_sequences[session_id] = max(
-            sequence,
-            self._latest_sequences.get(session_id, sequence),
-        )
         try:
             if self.on_transcript is not None:
                 callback_result = self.on_transcript(event)
                 if inspect.isawaitable(callback_result):
                     await callback_result
             result = await asyncio.to_thread(self.dispatch_transcript, event)
-            if result is None or self._latest_sequences.get(session_id) != sequence:
+            if result is None:
                 return
             if self.result_topic:
                 await ctx.room.local_participant.publish_data(
@@ -554,12 +604,20 @@ class JapaneseCallListenerAgent:
                 callback_result = self.on_result(result)
                 if inspect.isawaitable(callback_result):
                     await callback_result
-        except Exception:
-            logger.exception(
-                "Voice Agent handoff to %s failed for session %s",
-                self.handoff,
-                session_id,
-            )
+        except Exception as error:
+            if self.on_error is not None:
+                try:
+                    callback_result = self.on_error(event, error)
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+                except Exception:
+                    logger.exception("Voice Agent error callback failed")
+            if self.debug or self.on_error is None:
+                logger.exception(
+                    "Voice Agent handoff to %s failed for session %s",
+                    self.handoff,
+                    session_id,
+                )
 
     def _prewarm(self, proc: JobProcess) -> None:
         proc.userdata["vad"] = silero.VAD.load()
@@ -686,6 +744,44 @@ def _speaker_role(speaker_id: str | None) -> str:
     if isinstance(speaker_id, str) and speaker_id.startswith("caller-"):
         return "caller"
     return "unknown"
+
+
+def _committed_speaker_id(
+    fragments: tuple[tuple[str | None, str | None], ...],
+) -> str | None:
+    return _dominant_value(
+        speaker_id
+        for speaker_id, _ in fragments
+        if speaker_id and speaker_id != "unknown"
+    )
+
+
+def _committed_speaker_role(
+    fragments: tuple[tuple[str | None, str | None], ...],
+) -> str:
+    role = _dominant_value(
+        candidate
+        for speaker_id, _ in fragments
+        if (candidate := _speaker_role(speaker_id)) != "unknown"
+    )
+    return role or "unknown"
+
+
+def _dominant_value(values: Iterable[str]) -> str | None:
+    counts = Counter(values)
+    if not counts:
+        return None
+    ranked = counts.most_common(2)
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return None
+    return ranked[0][0]
+
+
+def _committed_language(
+    fragments: tuple[tuple[str | None, str | None], ...],
+    fallback: str,
+) -> str:
+    return next((language for _, language in fragments if language), fallback)
 
 
 def _is_non_speech_transcript(text: str) -> bool:

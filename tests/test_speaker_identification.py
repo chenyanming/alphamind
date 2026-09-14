@@ -104,6 +104,46 @@ class LocalSpeakerIdentifierTests(unittest.TestCase):
             self.assertFalse(identifier.enrolled)
             self.assertEqual(identifier.identify_wav(wav_bytes()), "self-enrollment")
 
+    def test_known_speakers_use_relative_match_in_the_threshold_gap(self) -> None:
+        extractor = FakeExtractor(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.58, 0.52, 0.627375487],
+                [0.52, 0.58, 0.627375487],
+            ]
+        )
+        with patch(
+            "speaker_identification._create_extractor",
+            return_value=extractor,
+        ):
+            identifier = LocalSpeakerIdentifier(model="speaker.onnx")
+            identifier.prepare(require_model_file=False)
+
+            self.assertEqual(identifier.identify_wav(wav_bytes()), "self-enrollment")
+            self.assertEqual(identifier.identify_wav(wav_bytes()), "caller-1")
+            self.assertEqual(identifier.identify_wav(wav_bytes()), "self")
+            self.assertEqual(identifier.identify_wav(wav_bytes()), "caller-1")
+
+    def test_first_uncertain_turn_does_not_poison_the_caller_profile(self) -> None:
+        extractor = FakeExtractor(
+            [
+                [1.0, 0.0, 0.0],
+                [0.54, 0.841665017, 0.0],
+                [0.0, 1.0, 0.0],
+            ]
+        )
+        with patch(
+            "speaker_identification._create_extractor",
+            return_value=extractor,
+        ):
+            identifier = LocalSpeakerIdentifier(model="speaker.onnx")
+            identifier.prepare(require_model_file=False)
+
+            self.assertEqual(identifier.identify_wav(wav_bytes()), "self-enrollment")
+            self.assertEqual(identifier.identify_wav(wav_bytes()), "unknown")
+            self.assertEqual(identifier.identify_wav(wav_bytes()), "caller-1")
+
 
 if __name__ == "__main__":
     unittest.main()

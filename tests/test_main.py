@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sys
+import os
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +10,14 @@ from voice_agent import JapaneseCallListenerAgent, VoiceConfigurationError
 
 
 class LocalAppTests(unittest.TestCase):
+    def setUp(self) -> None:
+        key = patch.dict(
+            os.environ,
+            {main.OPENAI_API_KEY_ENV: "test-provider-key"},
+        )
+        key.start()
+        self.addCleanup(key.stop)
+
     def test_main_registers_exactly_two_composable_agents(self) -> None:
         registrations = main.app._registrations
 
@@ -28,23 +36,14 @@ class LocalAppTests(unittest.TestCase):
             registrations[0][1].transcriber.provider,
             "vifu-local-whisper",
         )
-        self.assertEqual(main.reply_agent._reasoning.provider_type, "vifu-local")
+        self.assertEqual(main.reply_agent._reasoning.provider_type, "app-provider")
         self.assertEqual(
             main.reply_agent._reasoning.provider.model,
-            main.LOCAL_REASONING_MODEL,
+            main.OPENAI_MODEL,
         )
         self.assertEqual(
-            main.reply_agent._reasoning.provider.gpu_layers,
-            (
-                36
-                if sys.platform == "darwin"
-                and getattr(
-                    main.LocalLlama,
-                    "supports_safe_accelerator_shutdown",
-                    False,
-                )
-                else 0
-            ),
+            main.reply_agent._reasoning.provider.url,
+            main.OPENAI_CHAT_COMPLETIONS_URL,
         )
         self.assertEqual(main.reply_agent._reasoning.provider.timeout, 30.0)
         self.assertEqual(main.reply_agent.vifu_timeout_ms, 180_000)
@@ -90,14 +89,21 @@ class LocalAppTests(unittest.TestCase):
             registrations[1][2]["metadata"]["providerBindings"],
             {
                 "reasoning": {
-                    "providerKey": "local-qwen",
+                    "providerKey": "openai-compatible",
                     "capability": "chat",
                 }
             },
         )
         self.assertEqual(
             set(main.app.providers),
-            {"local-whisper", "local-qwen"},
+            {"local-whisper", "openai-compatible"},
+        )
+        self.assertEqual(
+            main.app.providers["openai-compatible"].descriptor()["settings"],
+            {
+                "url": main.OPENAI_CHAT_COMPLETIONS_URL,
+                "model": main.OPENAI_MODEL,
+            },
         )
 
     def test_main_delegates_the_complete_lifecycle_to_vifu(self) -> None:
@@ -182,6 +188,32 @@ class LocalAppTests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "Configuration error"),
             ):
                 main.main([])
+
+    def test_main_requires_the_default_openai_key_before_starting_audio(self) -> None:
+        with (
+            patch.dict(os.environ),
+            patch.object(main, "OPENAI_BASE_URL", main.DEFAULT_OPENAI_BASE_URL),
+            patch.object(main.app, "run") as run,
+        ):
+            os.environ.pop(main.OPENAI_API_KEY_ENV, None)
+            with self.assertRaisesRegex(
+                SystemExit,
+                main.OPENAI_API_KEY_ENV,
+            ):
+                main.main([])
+
+        run.assert_not_called()
+
+    def test_main_allows_a_compatible_provider_without_authentication(self) -> None:
+        with (
+            patch.dict(os.environ),
+            patch.object(main, "OPENAI_BASE_URL", "http://127.0.0.1:8080/v1"),
+            patch.object(main.app, "run") as run,
+        ):
+            os.environ.pop(main.OPENAI_API_KEY_ENV, None)
+            main.main([])
+
+        run.assert_called_once_with()
 
 if __name__ == "__main__":
     unittest.main()

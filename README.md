@@ -13,21 +13,15 @@ the Everyday Agents track of the Agents for Humans Hackathon.
 ## The two-Agent design
 
 ```python
-import sys
+import os
 
-from vifu import LocalLlama, LocalWhisper, Vifu
+from vifu import LocalWhisper, OpenAICompatible, Vifu
 from japanese_reply_agent import JapaneseReplyAgent
 from reasoning_config import ReasoningConfig
 from speaker_identification import LocalSpeakerIdentifier
 from voice_agent import JapaneseCallListenerAgent
 
 app = Vifu("AlphaMind")
-gpu_layers = (
-    36
-    if sys.platform == "darwin"
-    and getattr(LocalLlama, "supports_safe_accelerator_shutdown", False)
-    else 0
-)
 
 call_listener = JapaneseCallListenerAgent(
     language="ja-JP",
@@ -40,16 +34,19 @@ call_listener = JapaneseCallListenerAgent(
 )
 
 reasoning_provider = app.provider(
-    "local-qwen",
-    LocalLlama(
-        model="qwen2.5-3b-instruct-q4_k_m.gguf",
-        context_size=8_192,
-        gpu_layers=gpu_layers,
+    "openai-compatible",
+    OpenAICompatible(
+        url=(
+            f"{os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip('/')}"
+            "/chat/completions"
+        ),
+        model=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
+        api_key=os.environ.get("OPENAI_API_KEY"),
         timeout=30,
     ),
 )
 reply_agent = JapaneseReplyAgent(
-    ReasoningConfig.local(reasoning_provider)
+    ReasoningConfig.app_provider(reasoning_provider)
 )
 
 app.agent(
@@ -72,8 +69,9 @@ app.run()
   and result delivery. It enrolls the listener's voice, sends only caller
   turns to Strands, and keeps uncertain turns out of reasoning. It drops known non-speech
   markers and suppresses repeated final transcripts for three seconds per
-  session and speaker. While reasoning is busy, it coalesces waiting final
-  transcripts to the newest turn instead of building a stale inference queue.
+  session and speaker. Fragment-level speaker decisions are combined into one
+  turn-level role, and completed turns wait in capture order while reasoning is
+  busy so no intermediate speech is silently replaced.
 - `japanese-reply-agent` is a Strands specialist. It explains the caller's
   Japanese, provides distinct response options, identifies commitments and
   risks, and publishes one schema-validated Assist Card.
@@ -92,17 +90,12 @@ Place these models in `~/.vifu/models/`:
 
 ```text
 ~/.vifu/models/ggml-small.bin
-~/.vifu/models/qwen2.5-3b-instruct-q4_k_m.gguf
 ~/.vifu/models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
 ```
 
 - `ggml-small.bin` is the multilingual
   [whisper.cpp small model](https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-small.bin).
   The English-only model cannot transcribe Japanese.
-- `qwen2.5-3b-instruct-q4_k_m.gguf` is the official
-  [Qwen2.5 3B Instruct GGUF](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF)
-  Q4_K_M model. The 3B model is the default because the 0.5B variant did not
-  reliably preserve Japanese deadlines or produce natural reply suggestions.
 - `3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx` is the
   [sherpa-onnx speaker model](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models).
   It identifies the listener and multiple callers locally.
@@ -115,6 +108,21 @@ uv sync --frozen
 
 The lock file pins all public Python dependencies. `uv` manages the project
 environment, so you do not need to create or activate a virtual environment.
+
+Configure any service that implements the OpenAI Chat Completions API. For
+example, to use OpenAI:
+
+```bash
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+export OPENAI_MODEL="gpt-4.1-mini"
+export OPENAI_API_KEY="<your-api-key>"
+```
+
+`OPENAI_BASE_URL` is the API base URL, without `/chat/completions`. Replace the
+base URL and model to use another compatible provider. `OPENAI_API_KEY` may be
+omitted when the selected provider does not require authentication. The key is
+used only by the App-private reasoning Provider. It is not written to the App
+manifest, trace metadata, or repository.
 
 To exercise one deterministic two-Agent handoff without opening the microphone,
 run:
@@ -135,24 +143,21 @@ uv run --frozen python main.py
 
 AlphaMind first asks you to say one complete sentence. That voice becomes the
 listener profile for the current session. Later listener speech is shown but
-does not trigger Strands. Caller voices are assigned stable `caller-N` labels;
-short or ambiguous speech is skipped instead of being guessed.
+does not trigger Strands. Caller voices get stable `caller-N` labels. The app
+skips short or ambiguous speech instead of guessing the speaker.
 
 The default console shows the microphone meter, final Japanese transcript,
 analysis status, and Assist Card. Framework debug logs, raw tool calls, and
 native model-loading messages stay out of the user view. For development
 diagnostics, run `uv run --frozen python main.py --debug`.
 
-On Apple Silicon, `main.py` offloads 36 Qwen transformer layers to Metal when
-the installed runtime supports safe accelerator shutdown. Other environments
-use CPU execution. The local model timeout is 30 seconds.
-
 [LiveKit console mode](https://docs.livekit.io/agents/server/startup-modes/)
 uses the computer audio device. The voice pipeline runs in the local process.
-`main.py` configures local Whisper, speaker identification, and Qwen directly in
-Python. Each model is declared once in the App Provider list and bound to the
-Agent that uses it. The application does not read `.env.local` or join a hosted
-LiveKit room.
+`main.py` configures local Whisper, local speaker identification, and an
+OpenAI-compatible reasoning Provider directly in Python. Each Provider is
+declared once in the App Provider list and bound to the Agent that uses it. The
+application does not read `.env.local` or `~/.vifu/providers.json`, and it does
+not join a hosted LiveKit room.
 
 ## Tests
 
@@ -196,7 +201,7 @@ than five minutes. It also needs the submitter's AWS Builder ID.
 
 AlphaMind was created during the hackathon submission period. It uses the
 public Strands Agents, LiveKit Agents, Pydantic, and `vifu` Python packages.
-The `vifu` package supplies local model adapters and Agent routing. The model
+The `vifu` package supplies Provider adapters and Agent routing. Local model
 files are separate downloads and are not part of this repository.
 
 The project is licensed under Apache License 2.0. See [LICENSE](LICENSE).

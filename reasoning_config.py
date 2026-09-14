@@ -44,8 +44,13 @@ class ReasoningConfig:
         return cls(provider_type="vifu-profile", profile=profile)
 
     @classmethod
+    def app_provider(cls, provider: Any) -> ReasoningConfig:
+        return cls(provider_type="app-provider", provider=provider)
+
+    @classmethod
     def local(cls, provider: Any) -> ReasoningConfig:
-        return cls(provider_type="vifu-local", provider=provider)
+        """Compatibility alias for code that predates App-private Providers."""
+        return cls.app_provider(provider)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> ReasoningConfig:
@@ -92,10 +97,10 @@ class ReasoningConfig:
                     "VIFU_REASONING_PROFILE must not be empty"
                 )
             return
-        if self.provider_type == "vifu-local":
+        if self.provider_type in {"app-provider", "vifu-local"}:
             if not callable(getattr(self.provider, "complete", None)):
                 raise ReasoningConfigurationError(
-                    "the local Vifu reasoning Provider must define complete()"
+                    "the App reasoning Provider must define complete()"
                 )
             return
         if self.provider_type != "openai-compatible":
@@ -125,9 +130,9 @@ class ReasoningConfig:
                 "providerType": self.provider_type,
                 "profile": self.profile or "",
             }
-        if self.provider_type == "vifu-local":
+        if self.provider_type in {"app-provider", "vifu-local"}:
             return {
-                "providerType": self.provider_type,
+                "providerType": "app-provider",
                 "provider": str(
                     getattr(self.provider, "provider", type(self.provider).__name__)
                 ),

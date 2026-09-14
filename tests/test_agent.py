@@ -7,6 +7,8 @@ from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from vifu import LocalProviderError
+
 from japanese_reply_agent import (
     JapaneseReplyAgent,
     SYSTEM_PROMPT,
@@ -454,6 +456,67 @@ class CallAssistAgentTests(unittest.TestCase):
                 for constraint in prompts[0]["information_reply_constraints"]
             )
         )
+
+    def test_coaching_fragment_uses_caller_context_and_listener_role(self) -> None:
+        prompts: list[dict[str, object]] = []
+
+        class FakeAgent:
+            def __call__(self, prompt: str) -> None:
+                prompts.append(json.loads(prompt))
+
+        analyze_transcript(
+            FakeAgent(),
+            [
+                {"sequence": 1, "text": "じゃあ次は出身を一言足してみようか"},
+                {"sequence": 2, "text": "「○○出身です」って感じで"},
+            ],
+        )
+
+        self.assertEqual(
+            prompts[0]["previous_ja"],
+            ["じゃあ次は出身を一言足してみようか"],
+        )
+        self.assertEqual(
+            prompts[0]["speech_act"],
+            "caller_coaches_listener_response",
+        )
+        self.assertIn(
+            "接听者自己的信息",
+            prompts[0]["role_contract"],
+        )
+        self.assertTrue(
+            any(
+                "不能反问来电者" in constraint
+                for constraint in prompts[0]["coaching_reply_constraints"]
+            )
+        )
+
+    def test_coaching_reply_rejects_reversed_personal_information_question(
+        self,
+    ) -> None:
+        sink = CallAssistResultSink()
+        sink.begin_agent_turn()
+        sink.publish_from_tool(
+            source_text="「○○出身です」って感じで",
+            translation_zh="用“我来自某地”这样的说法。",
+            suggested_replies=[
+                {
+                    "japanese": "はい、言ってみます。",
+                    "chinese": "好的，我试着说。",
+                },
+                {
+                    "japanese": "出身地を具体的に教えていただけますか。",
+                    "chinese": "可以具体告诉我您的出生地吗？",
+                },
+            ],
+            confirmation_required=False,
+            confirmation_zh="",
+        )
+        card = sink.finish_agent_turn()
+
+        errors = validate_assist_card(card.source_text, card)
+
+        self.assertTrue(any("coaching" in error for error in errors))
 
     def test_information_request_tool_keeps_unknown_values_in_application_code(
         self,
@@ -1059,6 +1122,108 @@ class CallAssistAgentTests(unittest.TestCase):
         self.assertEqual(len(result["suggestedReplies"]), 2)
         self.assertTrue(result["confirmationRequired"])
         self.assertIn("请勿直接确认", result["confirmationZh"])
+
+    def test_retries_a_transient_provider_failure_on_the_same_provider(self) -> None:
+        attempts = 0
+
+        def fake_create(
+            _app: object,
+            _request: object,
+            result_sink: object,
+            source_text: str,
+            _reasoning: object,
+        ) -> object:
+            nonlocal attempts
+            attempts += 1
+            current_attempt = attempts
+
+            class FakeStrandsAgent:
+                def __call__(self, _prompt: str) -> None:
+                    if current_attempt == 1:
+                        raise LocalProviderError(
+                            "OpenAI-compatible Provider request failed"
+                        )
+                    result_sink.publish_from_tool(
+                        source_text=source_text,
+                        translation_zh="早上好。",
+                        suggested_replies=[
+                            {
+                                "japanese": "はい、おはようございます。",
+                                "chinese": "早上好。",
+                            },
+                            {
+                                "japanese": "本日もよろしくお願いします。",
+                                "chinese": "今天也请多关照。",
+                            },
+                        ],
+                        confirmation_required=False,
+                        confirmation_zh="",
+                    )
+
+            return FakeStrandsAgent()
+
+        assistant = JapaneseReplyAgent(
+            ReasoningConfig.vifu_profile("call-assist-reasoning")
+        )
+        assistant.vifu_bind(object())
+        request = SimpleNamespace(
+            input={"transcript": "おはようございます。"},
+            trace=FakeTrace(),
+            session_id="provider-retry",
+            instructions=None,
+        )
+
+        with patch(
+            "japanese_reply_agent.create_strands_agent",
+            side_effect=fake_create,
+        ):
+            result = assistant(request)
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(result["translationZh"], "早上好。")
+
+    def test_does_not_retry_a_provider_authentication_failure(self) -> None:
+        attempts = 0
+
+        def fake_create(
+            _app: object,
+            _request: object,
+            _result_sink: object,
+            _source_text: str,
+            _reasoning: object,
+        ) -> object:
+            nonlocal attempts
+            attempts += 1
+
+            class FakeStrandsAgent:
+                def __call__(self, _prompt: str) -> None:
+                    raise LocalProviderError(
+                        "OpenAI-compatible Provider returned HTTP 401"
+                    )
+
+            return FakeStrandsAgent()
+
+        assistant = JapaneseReplyAgent(
+            ReasoningConfig.vifu_profile("call-assist-reasoning")
+        )
+        assistant.vifu_bind(object())
+        request = SimpleNamespace(
+            input={"transcript": "おはようございます。"},
+            trace=FakeTrace(),
+            session_id="provider-auth-error",
+            instructions=None,
+        )
+
+        with (
+            patch(
+                "japanese_reply_agent.create_strands_agent",
+                side_effect=fake_create,
+            ),
+            self.assertRaisesRegex(LocalProviderError, "HTTP 401"),
+        ):
+            assistant(request)
+
+        self.assertEqual(attempts, 1)
 
     def test_unconfigured_reasoning_provider_fails_before_running(self) -> None:
         assistant = JapaneseReplyAgent(ReasoningConfig.unconfigured())
