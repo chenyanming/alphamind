@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920" role="img" aria-labelledby="title description">
+  <title id="title">AlphaMind mobile architecture</title>
+  <desc id="description">A portrait diagram of one Python application with a LiveKit Call Listener Agent and a Strands Reply Agent.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#101b33"/>
+    </linearGradient>
+    <linearGradient id="voice" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#238ff7"/>
+      <stop offset="1" stop-color="#0758d8"/>
+    </linearGradient>
+    <linearGradient id="reasoning" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a55cff"/>
+      <stop offset="1" stop-color="#7035d6"/>
+    </linearGradient>
+    <linearGradient id="output" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22bf82"/>
+      <stop offset="1" stop-color="#087a58"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000814" flood-opacity="0.45"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto">
+      <path d="M0,0 L14,7 L0,14 Z" fill="#91aace"/>
+    </marker>
+    <style>
+      .title { font: 700 58px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #f7f9ff; }
+      .subtitle { font: 400 26px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #afc0da; }
+      .label { font: 700 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #d9e6f8; letter-spacing: 1.5px; }
+      .box-title { font: 700 40px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .box-copy { font: 500 27px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #edf4ff; }
+      .small { font: 500 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #bfd1ea; }
+      .center { text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect width="1080" height="1920" rx="44" fill="url(#background)"/>
+  <circle cx="1010" cy="120" r="300" fill="#163a73" opacity="0.22"/>
+  <circle cx="40" cy="1840" r="330" fill="#532b8a" opacity="0.20"/>
+
+  <text x="72" y="94" class="title">AlphaMind</text>
+  <text x="72" y="142" class="subtitle">Real-time call intelligence for life in Japan</text>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="205" width="936" height="180" rx="28" fill="#15253d" stroke="#3d5576" stroke-width="3"/>
+    <text x="112" y="256" class="label">VOICE SOURCES</text>
+    <text x="112" y="313" class="box-title">Live audio</text>
+    <text x="112" y="354" class="small">Microphone · Speakerphone · LiveKit room</text>
+  </g>
+
+  <line x1="540" y1="385" x2="540" y2="444" stroke="#91aace" stroke-width="7" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="475" width="936" height="360" rx="36" fill="url(#voice)"/>
+    <text x="118" y="532" class="label">AGENT PROFILE 1</text>
+    <text x="118" y="596" class="box-title">Call Listener</text>
+    <text x="118" y="653" class="box-copy">LiveKit Agents</text>
+    <text x="118" y="700" class="box-copy">Provider: Local Whisper</text>
+    <text x="118" y="747" class="box-copy">Speaker ID · VAD · final-turn routing</text>
+    <rect x="118" y="774" width="844" height="44" rx="14" fill="#061d42" opacity="0.60"/>
+    <text x="540" y="804" class="small center">Final caller transcript</text>
+  </g>
+
+  <text x="578" y="886" class="small">typed handoff</text>
+  <line x1="540" y1="835" x2="540" y2="924" stroke="#91aace" stroke-width="7" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="955" width="936" height="390" rx="36" fill="url(#reasoning)"/>
+    <text x="118" y="1012" class="label">AGENT PROFILE 2</text>
+    <text x="118" y="1076" class="box-title">Reply Agent</text>
+    <text x="118" y="1133" class="box-copy">Strands Agents</text>
+    <text x="118" y="1180" class="box-copy">Provider: OpenAI-compatible LLM</text>
+    <text x="118" y="1227" class="box-copy">Context · replies · safety validation</text>
+    <rect x="118" y="1264" width="844" height="52" rx="14" fill="#291151" opacity="0.60"/>
+    <text x="540" y="1298" class="small center">Chinese meaning · 2 replies · risk checks</text>
+  </g>
+
+  <line x1="540" y1="1345" x2="540" y2="1414" stroke="#91aace" stroke-width="7" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="1445" width="936" height="235" rx="34" fill="url(#output)"/>
+    <text x="118" y="1502" class="label">ASSIST CARD</text>
+    <text x="118" y="1564" class="box-title">Understand. Answer. Learn.</text>
+    <text x="118" y="1616" class="box-copy">What they said · What it means · What to say next</text>
+    <text x="118" y="1653" class="small">The listener keeps control of every decision.</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="1745" width="936" height="105" rx="26" fill="#111e31" stroke="#314b70" stroke-width="3"/>
+    <text x="112" y="1790" class="label">ONE VIFU APP · PYTHON</text>
+    <text x="112" y="1826" class="small">2 Agent Profiles · App Providers · Typed handoff · Traces</text>
+  </g>
+
+  <text x="540" y="1889" class="small center">LiveKit listens · Strands understands and suggests</text>
+</svg>
