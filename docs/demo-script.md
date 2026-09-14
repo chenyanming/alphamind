@@ -55,9 +55,10 @@ deterministic validation/retry boundary.
 
 Narration:
 
-> Strands owns the specialist Agent loop and structured tool call. It produces
-> several response options for the caller's actual request. The application
-> rejects copied, duplicate, or unsafe answers and retries the same model.
+> The Reply Agent uses a Strands Agent with one typed card tool. The tool
+> returns a Chinese explanation, two Japanese reply choices, and a confirmation
+> warning. Pydantic and semantic rules reject unsafe cards. Strands receives
+> the exact errors for one bounded correction with the same model.
 
 ## 2:40–3:00 — Impact
 

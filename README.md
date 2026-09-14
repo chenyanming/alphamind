@@ -171,24 +171,42 @@ The tests cover the two-Agent registration, the real in-process handoff,
 non-speech and duplicate-turn filtering, Strands tool schema, result validation,
 interruption ordering, and deterministic retry of unsafe model output.
 
-## Model and safety behavior
+## Strands Agent implementation
 
-The Strands Agent must call its `card` tool exactly once per attempt. The tool
-requires two response options. Pydantic and deterministic checks
-reject duplicate responses, copied caller requests, unsafe commitments, and
-incorrect dates. The application uses deterministic decoding and retries a
-rejected card once with the same model. If the result is still unusable, the
-Agent returns a safe clarification card so the voice session can continue.
-When the caller asks the listener for personal or booking information, the
-model translates the request while the application supplies safe listener-side
-responses. It never fills unknown names, dates, amounts, or numbers for the
-user.
+The Japanese Reply Agent owns the complete reasoning task. The Call Listener
+sends it a typed `CallAssistInput` with the latest caller turn and relevant
+caller context.
+
+Each attempt creates a Strands `Agent` with the selected App Provider, the
+specialist system prompt, one structured `card` tool, and an `AfterToolsEvent`
+hook. Vifu adapts the OpenAI-compatible Provider to the Strands model interface.
+The hook ends the Agent turn immediately after the tool publishes a result.
+
+The `card` tool is the only output path. Its schema requires one Chinese
+explanation and exactly two Japanese reply choices. It also carries the Chinese
+meaning of each reply and an optional confirmation message. Information
+requests use a narrower schema that prevents the model from inventing private
+values.
+
+Pydantic validates the tool arguments and the final Assist Card. Deterministic
+semantic rules reject duplicate replies, copied caller requests, reversed
+speaker roles, incorrect dates, invented numbers, and unsafe commitments. The
+result sink also rejects missing or repeated tool calls.
+
+If a card fails validation, the next Strands attempt receives the rejected card
+and the exact errors. The retry uses the same Provider and deterministic
+decoding. If the second card is unsafe, the Agent returns a fixed clarification
+card so the voice session can continue.
+
+Trace metadata records the Strands framework, selected Provider, transcription
+Provider, and attempt number. The tests exercise the Agent loop, tool schema,
+typed handoff, semantic validation, and bounded correction path.
 
 ## Hackathon fit
 
-The specialist is a real Strands Agent, not a prompt-only wrapper. It uses the
-Strands `Agent` loop and a structured `@tool`. A deterministic validation
-boundary checks each result before the application shows an Assist Card.
+The specialist is a real Strands Agent, not a prompt-only wrapper. Strands owns
+the reasoning loop, tool execution, and correction attempt. The application
+adds a deterministic safety boundary before it shows an Assist Card.
 
 The [official requirements](https://agentsforhumans.devpost.com/rules) state
 that Amazon Bedrock AgentCore deployment can strengthen the Technical
